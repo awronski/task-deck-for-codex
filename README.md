@@ -5,6 +5,14 @@ Task Deck for Codex is an unofficial native macOS companion for keeping active C
 > [!WARNING]
 > This project is not affiliated with, endorsed by, or supported by OpenAI. It relies on undocumented Codex database, session, and local desktop IPC formats that may change without notice.
 
+## Download
+
+**[Download the latest ready-to-use DMG](https://github.com/awronski/task-deck-for-codex/releases/latest/download/TaskDeckForCodex.dmg)**, open it, and drag Task Deck for Codex to Applications. Building from source is optional.
+
+<p align="center">
+  <img src="docs/images/task-deck-attention-states.png" alt="Task Deck for Codex showing task attention states" width="640">
+</p>
+
 ## Features
 
 - Console and All Tasks views with search and multi-select filters
@@ -19,39 +27,30 @@ Task Deck for Codex is an unofficial native macOS companion for keeping active C
 ## Requirements
 
 - macOS 26 or later
-- Xcode 26 with the Swift 6.2 toolchain
 - Codex for macOS
 
-## Build and test
+## Build from source (optional)
+
+Most users should use the ready-made DMG above. Building from source is only necessary if you want to develop or inspect the project. It requires Xcode 26 with Swift 6.2.
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build -c release
-```
-
-For local development, the helper script builds an app bundle, applies ad-hoc signing, and launches it:
-
-```sh
+git clone https://github.com/awronski/task-deck-for-codex.git
+cd task-deck-for-codex
 ./script/build_and_run.sh
 ```
 
-Use `--debug` for a debug build or `--build-only` to skip launching. The script is for development only; ad-hoc signing is not suitable for distributing binaries.
+The helper builds an ad-hoc-signed app and launches it. Run the test suite with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`.
 
-## Package a DMG
+<details>
+<summary>Maintainer release packaging</summary>
 
-Create a local DMG containing an ad-hoc-signed app:
+Create a local DMG:
 
 ```sh
 ./script/package_dmg.sh
 ```
 
-Create a Developer ID-signed DMG:
-
-```sh
-SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./script/package_dmg.sh
-```
-
-Create a Developer ID-signed and notarized DMG using a stored `notarytool` profile:
+Create a Developer ID-signed and notarized DMG:
 
 ```sh
 SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
@@ -60,7 +59,9 @@ NOTARY_PROFILE="your-notary-profile" \
 ./script/package_dmg.sh
 ```
 
-The script builds the release app, writes `dist/TaskDeckForCodex.dmg`, and verifies the resulting disk image. With `NOTARIZE=1`, it submits and staples both the app and DMG. The same Developer ID identity and `notarytool` profile can be reused across apps belonging to the same Apple Developer Team.
+The script writes `dist/TaskDeckForCodex.dmg`. With `NOTARIZE=1`, it signs, submits, staples, and verifies both the app and DMG.
+
+</details>
 
 ## Privacy and local data
 
