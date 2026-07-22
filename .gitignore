@@ -1,0 +1,43 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Swift Package Manager
+/.build/
+/.swiftpm/
+
+# Xcode user and build data
+DerivedData/
+*.xcuserstate
+*.xcresult
+*.xccheckout
+*.xcscmblueprint
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Generated application bundles and symbols
+/dist/
+*.app
+*.dSYM
+*.dSYM.zip
+
+# Local development artifacts
+/*.png
+/*.jpg
+/*.jpeg
+*.log
+*.swp
+*~
+
+# Local configuration and signing material
+.env
+.env.*
+!.env.example
+*.cer
+*.p12
+*.mobileprovision
+*.provisionprofile
