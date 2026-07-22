@@ -33,6 +33,11 @@ public enum CodexRepositoryError: LocalizedError, Equatable {
 }
 
 public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
+    private struct SQLiteFailure: Error {
+        let status: Int32?
+        let message: String
+    }
+
     private struct ThreadRow: Decodable {
         let id: String
         let title: String?
@@ -296,7 +301,29 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
         ORDER BY recency_at_ms DESC
         """
 
-        let output = try runSQLite(arguments: ["-json", "-readonly", databaseURL.path, query])
+        let output: Data
+        do {
+            output = try runSQLite(arguments: ["-json", "-readonly", databaseURL.path, query])
+        } catch let failure as SQLiteFailure {
+            // sqlite3 returns SQLITE_CANTOPEN as process status 14.
+            guard failure.status == 14 else {
+                throw CodexRepositoryError.sqliteFailed(failure.message)
+            }
+
+            // Codex uses WAL mode, but SQLite removes its sidecars when the last
+            // connection closes. Reopen the existing database read-write only so
+            // SQLite can recreate those files; query_only keeps the SQL read-only.
+            do {
+                output = try runSQLite(arguments: [
+                    "-json",
+                    "-cmd", "PRAGMA query_only=ON",
+                    databaseURL.absoluteString + "?mode=rw",
+                    query
+                ])
+            } catch let fallbackFailure as SQLiteFailure {
+                throw CodexRepositoryError.sqliteFailed(fallbackFailure.message)
+            }
+        }
 
         guard !output.isEmpty else { return [] }
         do {
@@ -319,7 +346,7 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
         do {
             try process.run()
         } catch {
-            throw CodexRepositoryError.sqliteFailed(error.localizedDescription)
+            throw SQLiteFailure(status: nil, message: error.localizedDescription)
         }
 
         let output = stdout.fileHandleForReading.readDataToEndOfFile()
@@ -330,7 +357,10 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
             let message = String(data: errorOutput, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let fallback = "sqlite3 exited with code \(process.terminationStatus)"
-            throw CodexRepositoryError.sqliteFailed(message.isEmpty ? fallback : message)
+            throw SQLiteFailure(
+                status: process.terminationStatus,
+                message: message.isEmpty ? fallback : message
+            )
         }
         return output
     }

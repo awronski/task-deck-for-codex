@@ -22,6 +22,33 @@ struct CodexTaskRepositoryTests {
     }
 
     @Test
+    func loadsWALDatabaseWhenSidecarFilesAreMissing() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let taskID = UUID().uuidString
+        try fixture.writeCatalog(
+            projects: [(id: "project", name: "Project", path: "/Users/test/code/project")],
+            assignments: [taskID: "project"]
+        )
+        try fixture.writeDatabase(rows: [
+            .init(
+                id: taskID,
+                title: "Checkpointed task",
+                cwd: "/Users/test/code/project",
+                rolloutPath: nil
+            )
+        ])
+        try fixture.convertDatabaseToWALWithoutSidecars()
+
+        let snapshot = try await fixture.repository().loadSnapshot(
+            including: CodexTaskKind.defaultVisible
+        )
+
+        #expect(snapshot.tasks.map(\.id) == [taskID])
+    }
+
+    @Test
     func usesCodexCommandToArchiveAndRestoreTask() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.remove() }
@@ -336,7 +363,6 @@ private struct RepositoryFixture {
     }
 
     func writeDatabase(rows: [DatabaseRow]) throws {
-        let database = root.appendingPathComponent("state_5.sqlite")
         var statements = [
             """
             CREATE TABLE threads (
@@ -372,10 +398,27 @@ private struct RepositoryFixture {
             """
         }
 
+        try executeSQL(statements.joined(separator: ";"))
+    }
+
+    func convertDatabaseToWALWithoutSidecars() throws {
+        try executeSQL("PRAGMA journal_mode=WAL; PRAGMA wal_checkpoint(TRUNCATE)")
+
+        let databasePath = root.appendingPathComponent("state_5.sqlite").path
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = URL(fileURLWithPath: databasePath + suffix)
+            if FileManager.default.fileExists(atPath: sidecar.path) {
+                try FileManager.default.removeItem(at: sidecar)
+            }
+        }
+    }
+
+    private func executeSQL(_ sql: String) throws {
+        let database = root.appendingPathComponent("state_5.sqlite")
         let process = Process()
         let stderr = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = [database.path, statements.joined(separator: ";")]
+        process.arguments = [database.path, sql]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = stderr
         try process.run()

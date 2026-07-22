@@ -27,6 +27,7 @@ DerivedData/
 *.dSYM.zip
 
 # Local development artifacts
+docs/mockups/
 /*.png
 /*.jpg
 /*.jpeg
