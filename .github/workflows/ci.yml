@@ -15,5 +15,5 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Run tests
         run: swift test
-      - name: Build release app bundle
-        run: ./script/build_and_run.sh --build-only
+      - name: Build local DMG
+        run: ./script/package_dmg.sh

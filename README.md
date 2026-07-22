@@ -37,6 +37,31 @@ For local development, the helper script builds an app bundle, applies ad-hoc si
 
 Use `--debug` for a debug build or `--build-only` to skip launching. The script is for development only; ad-hoc signing is not suitable for distributing binaries.
 
+## Package a DMG
+
+Create a local DMG containing an ad-hoc-signed app:
+
+```sh
+./script/package_dmg.sh
+```
+
+Create a Developer ID-signed DMG:
+
+```sh
+SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./script/package_dmg.sh
+```
+
+Create a Developer ID-signed and notarized DMG using a stored `notarytool` profile:
+
+```sh
+SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+NOTARIZE=1 \
+NOTARY_PROFILE="your-notary-profile" \
+./script/package_dmg.sh
+```
+
+The script builds the release app, writes `dist/TaskDeckForCodex.dmg`, and verifies the resulting disk image. With `NOTARIZE=1`, it submits and staples both the app and DMG. The same Developer ID identity and `notarytool` profile can be reused across apps belonging to the same Apple Developer Team.
+
 ## Privacy and local data
 
 Task Deck for Codex makes no network requests. It accesses Codex only through local files, Codex's bundled command-line tool, and local desktop IPC. It reads Codex state locally from:
@@ -53,7 +78,7 @@ Task Deck for Codex relies on undocumented internal Codex database, session, and
 
 ## Release scope
 
-This repository is a source release. Public binary distribution would additionally require a Developer ID build, hardened runtime, signing, and notarization.
+Generated app and DMG artifacts are ignored by Git. Public binary releases should use the packaging script with a Developer ID identity and notarization profile; its default ad-hoc signature is only for local testing.
 
 ## License
 
