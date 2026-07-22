@@ -7,10 +7,12 @@ Task Deck for Codex is an unofficial native macOS companion for keeping active C
 
 ## Download
 
-**[Download the latest ready-to-use DMG](https://github.com/awronski/task-deck-for-codex/releases/latest/download/TaskDeckForCodex.dmg)**, open it, and drag Task Deck for Codex to Applications. Building from source is optional.
+**[Download Task Deck for Codex (.dmg) →](https://github.com/awronski/task-deck-for-codex/releases/latest/download/TaskDeckForCodex.dmg)**
+
+The ready-made build is Developer ID signed and Apple notarized. Open the DMG and drag Task Deck for Codex to Applications—building from source is optional.
 
 <p align="center">
-  <img src="docs/images/task-deck-attention-states.png" alt="Task Deck for Codex showing task attention states" width="640">
+  <img src="docs/images/task-deck-attention-states.png" alt="Task Deck for Codex showing task attention states" width="480">
 </p>
 
 ## Features
@@ -19,7 +21,8 @@ Task Deck for Codex is an unofficial native macOS companion for keeping active C
 - Project grouping, persistent project ordering, and a dedicated Chats group
 - Persistent task pins and local title overrides
 - Task archiving with undo
-- Live task status, elapsed working time, and relative creation time
+- Live working, input, permission, finished, and error states
+- Elapsed working time and relative creation time
 - Configurable font family and font size
 - New-task shortcuts and direct navigation to tasks in Codex
 - Automatic refresh from Codex's local task data
@@ -39,7 +42,11 @@ cd task-deck-for-codex
 ./script/build_and_run.sh
 ```
 
-The helper builds an ad-hoc-signed app and launches it. Run the test suite with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`.
+The helper builds an ad-hoc-signed app and launches it. To run the tests:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+```
 
 <details>
 <summary>Maintainer release packaging</summary>
@@ -59,7 +66,7 @@ NOTARY_PROFILE="your-notary-profile" \
 ./script/package_dmg.sh
 ```
 
-The script writes `dist/TaskDeckForCodex.dmg`. With `NOTARIZE=1`, it signs, submits, staples, and verifies both the app and DMG.
+The script writes `dist/TaskDeckForCodex.dmg`. With `NOTARIZE=1`, it signs, submits, staples, and verifies both the app and DMG. Generated app and DMG artifacts are ignored by Git; the default ad-hoc signature is for local testing only.
 
 </details>
 
@@ -75,11 +82,7 @@ Archiving and undo use Codex's bundled command-line tool so Codex moves the sess
 
 ## Compatibility
 
-Task Deck for Codex relies on undocumented internal Codex database, session, and local desktop IPC formats. A Codex update may change those formats and temporarily break task discovery, status reporting, or immediate sidebar refresh. This project is not affiliated with or supported by OpenAI.
-
-## Release scope
-
-Generated app and DMG artifacts are ignored by Git. Public binary releases should use the packaging script with a Developer ID identity and notarization profile; its default ad-hoc signature is only for local testing.
+Task Deck for Codex relies on undocumented internal Codex database, session, and local desktop IPC formats. A Codex update may change those formats and temporarily break task discovery, status reporting, or immediate sidebar refresh.
 
 ## License
 
