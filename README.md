@@ -9,30 +9,22 @@ Task Deck for Codex is an unofficial native macOS companion for keeping active C
 The ready-made build is Developer ID signed and Apple notarized. Open the DMG and drag Task Deck for Codex to Applications—building from source is optional.
 
 <p align="center">
-  <img src="docs/images/task-deck-attention-states.png" alt="Task Deck for Codex showing task attention states" width="480">
+  <a href="docs/images/task-deck-attention-states-expanded.png">
+    <img src="docs/images/task-deck-attention-states-expanded.png" alt="Task Deck for Codex with an expanded activity preview" width="440">
+  </a>
 </p>
 
 <details>
-<summary><strong>More screenshots</strong> — activity details and filtering</summary>
+<summary><strong>More screenshots</strong> — task states and filters</summary>
 <br>
-<table>
-  <tr>
-    <th>Expanded activity</th>
-    <th>Task filters</th>
-  </tr>
-  <tr>
-    <td>
-      <a href="docs/images/task-deck-attention-states-expanded.png">
-        <img src="docs/images/task-deck-attention-states-expanded.png" alt="Task Deck for Codex with an expanded activity preview" width="420">
-      </a>
-    </td>
-    <td>
-      <a href="docs/images/task-deck-attention-states-filters.png">
-        <img src="docs/images/task-deck-attention-states-filters.png" alt="Task Deck for Codex task filters" width="420">
-      </a>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <a href="docs/images/task-deck-attention-states.png">
+    <img src="docs/images/task-deck-attention-states.png" alt="Task Deck for Codex showing task attention states" width="340">
+  </a>
+  <a href="docs/images/task-deck-attention-states-filters.png">
+    <img src="docs/images/task-deck-attention-states-filters.png" alt="Task Deck for Codex task filters" width="340">
+  </a>
+</p>
 </details>
 
 ## Features
