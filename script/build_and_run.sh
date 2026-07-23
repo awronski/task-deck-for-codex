@@ -84,5 +84,5 @@ if [[ "${1:-}" != "--build-only" ]]; then
             exit 1
         fi
     fi
-    /usr/bin/open "$APP"
+    /usr/bin/open -n "$APP"
 fi

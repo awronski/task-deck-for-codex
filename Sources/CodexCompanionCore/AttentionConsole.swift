@@ -9,6 +9,9 @@ public final class AttentionConsole {
     public private(set) var lastUpdated: Date?
     public private(set) var errorMessage: String?
     public private(set) var isRefreshing = false
+    public private(set) var triggeredReminders: [TaskReminder] = []
+    public private(set) var missedReminders: [TaskReminder] = []
+    public private(set) var reminderSoundSequence = 0
 
     @ObservationIgnored private let loader: any CodexTaskLoading
     @ObservationIgnored private let archiver: any CodexTaskArchiving
@@ -16,12 +19,14 @@ public final class AttentionConsole {
     @ObservationIgnored private let titleStorage: any TaskTitleStoring
     @ObservationIgnored private let priorityStorage: any TaskPriorityStoring
     @ObservationIgnored private let noteStorage: any TaskNoteStoring
+    @ObservationIgnored private let reminderStorage: any TaskReminderStoring
     @ObservationIgnored private let projectOrderStorage: any ProjectOrderStoring
     @ObservationIgnored private let launchedAt: Date
     private var ledger: VisibilityLedger
     private var titleOverrides: [String: String]
     private var priorities: [String: TaskPriority]
     private var notes: [String: String]
+    private var reminders: [String: TaskReminder]
     public private(set) var projectOrderIDs: [String]
     public private(set) var includedTaskKinds = CodexTaskKind.defaultVisible
     @ObservationIgnored private var pollingTask: Task<Void, Never>?
@@ -35,6 +40,7 @@ public final class AttentionConsole {
         titleStorage: any TaskTitleStoring,
         priorityStorage: any TaskPriorityStoring,
         noteStorage: any TaskNoteStoring = UserDefaultsTaskNoteStorage(),
+        reminderStorage: any TaskReminderStoring = UserDefaultsTaskReminderStorage(),
         projectOrderStorage: any ProjectOrderStoring,
         launchedAt: Date = .now
     ) {
@@ -44,12 +50,14 @@ public final class AttentionConsole {
         self.titleStorage = titleStorage
         self.priorityStorage = priorityStorage
         self.noteStorage = noteStorage
+        self.reminderStorage = reminderStorage
         self.projectOrderStorage = projectOrderStorage
         self.launchedAt = launchedAt
         self.ledger = storage.load()
         self.titleOverrides = titleStorage.load()
         self.priorities = priorityStorage.load()
         self.notes = noteStorage.load()
+        self.reminders = reminderStorage.load()
         self.projectOrderIDs = projectOrderStorage.load()
     }
 
@@ -70,6 +78,7 @@ public final class AttentionConsole {
         pollingTask = Task { [weak self] in
             guard let self else { return }
             await refresh()
+            processDueReminders(at: .now, groupingAsMissed: true)
             while !Task.isCancelled {
                 do {
                     try await Task.sleep(for: .seconds(2))
@@ -77,6 +86,7 @@ public final class AttentionConsole {
                     return
                 }
                 await refresh(showsActivity: false)
+                processDueReminders(at: .now, groupingAsMissed: false)
             }
         }
     }
@@ -194,6 +204,14 @@ public final class AttentionConsole {
             titleOverrides[taskID] = trimmedTitle
         }
         titleStorage.save(titleOverrides)
+
+        if let reminder = reminders[taskID] {
+            let updatedTitle = trimmedTitle.isEmpty
+                ? sourceTasks.first(where: { $0.id == taskID })?.title ?? reminder.title
+                : trimmedTitle
+            reminders[taskID] = TaskReminder(taskID: taskID, title: updatedTitle, dueAt: reminder.dueAt)
+            reminderStorage.save(reminders)
+        }
     }
 
     public func setPriority(_ priority: TaskPriority, for taskID: String) {
@@ -223,6 +241,103 @@ public final class AttentionConsole {
             notes[taskID] = storedNote
         }
         noteStorage.save(notes)
+    }
+
+    public var currentTriggeredReminder: TaskReminder? {
+        triggeredReminders.first
+    }
+
+    public func reminder(for taskID: String) -> TaskReminder? {
+        reminders[taskID]
+    }
+
+    @discardableResult
+    public func setReminder(
+        for taskID: String,
+        title: String,
+        at dueAt: Date,
+        now: Date = .now
+    ) -> Bool {
+        guard dueAt > now else { return false }
+        removePresentedReminders(for: taskID)
+        reminders[taskID] = TaskReminder(taskID: taskID, title: title, dueAt: dueAt)
+        reminderStorage.save(reminders)
+        return true
+    }
+
+    public func removeReminder(for taskID: String) {
+        removePresentedReminders(for: taskID)
+        if reminders.removeValue(forKey: taskID) != nil {
+            reminderStorage.save(reminders)
+        }
+    }
+
+    public func processDueReminders(at date: Date, groupingAsMissed: Bool) {
+        let presentedTaskIDs = Set(triggeredReminders.map(\.taskID))
+            .union(missedReminders.map(\.taskID))
+        let dueReminders = reminders.values
+            .filter { reminder in
+                reminder.dueAt <= date
+                    && !presentedTaskIDs.contains(reminder.taskID)
+            }
+            .sorted {
+                if $0.dueAt != $1.dueAt { return $0.dueAt < $1.dueAt }
+                return $0.taskID < $1.taskID
+            }
+            .map { reminder in
+                let currentTitle = allTasks.first(where: { $0.id == reminder.taskID })?.title
+                return TaskReminder(
+                    taskID: reminder.taskID,
+                    title: currentTitle ?? reminder.title,
+                    dueAt: reminder.dueAt
+                )
+            }
+        guard !dueReminders.isEmpty else { return }
+
+        for reminder in dueReminders {
+            ledger.enable(taskID: reminder.taskID)
+        }
+        storage.save(ledger)
+
+        if groupingAsMissed {
+            missedReminders.append(contentsOf: dueReminders)
+            missedReminders.sort {
+                if $0.dueAt != $1.dueAt { return $0.dueAt < $1.dueAt }
+                return $0.taskID < $1.taskID
+            }
+        } else {
+            triggeredReminders.append(contentsOf: dueReminders)
+        }
+        reminderSoundSequence &+= 1
+    }
+
+    public func dismissReminder(_ reminder: TaskReminder) {
+        removePresentedReminders(for: reminder.taskID)
+        guard reminders[reminder.taskID]?.dueAt == reminder.dueAt else { return }
+        reminders.removeValue(forKey: reminder.taskID)
+        reminderStorage.save(reminders)
+    }
+
+    public func dismissAllMissedReminders() {
+        var removedStoredReminder = false
+        for reminder in missedReminders where reminders[reminder.taskID]?.dueAt == reminder.dueAt {
+            reminders.removeValue(forKey: reminder.taskID)
+            removedStoredReminder = true
+        }
+        missedReminders.removeAll()
+        if removedStoredReminder {
+            reminderStorage.save(reminders)
+        }
+    }
+
+    @discardableResult
+    public func snooze(_ reminder: TaskReminder, until dueAt: Date, now: Date = .now) -> Bool {
+        setReminder(for: reminder.taskID, title: reminder.title, at: dueAt, now: now)
+    }
+
+    private func removePresentedReminders(for taskID: String) {
+        triggeredReminders.removeAll { $0.taskID == taskID }
+        missedReminders.removeAll { $0.taskID == taskID }
     }
 
     public func setProjectOrder(_ projectIDs: [String]) {

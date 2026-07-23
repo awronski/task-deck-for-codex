@@ -1,3 +1,4 @@
+import AppKit
 import CodexCompanionCore
 import SwiftUI
 
@@ -20,7 +21,6 @@ struct AttentionConsoleView: View {
     @State private var selectedProjectIDs: Set<String> = []
     @State private var selectedStatuses: Set<AttentionStatus> = []
     @State private var collapsedProjects: Set<String> = []
-    @State private var selectedTaskID: String?
     @State private var expandedTaskIDs: Set<String> = []
     @State private var isShowingLibrary = false
     @State private var isShowingFilters = false
@@ -136,6 +136,16 @@ struct AttentionConsoleView: View {
                     ErrorStrip(message: error)
                 }
 
+                if let reminder = console.currentTriggeredReminder {
+                    ReminderBanner(
+                        reminder: reminder,
+                        onOpen: { open(reminder) },
+                        onSnooze: { console.snooze(reminder, until: $0) },
+                        onDismiss: { console.dismissReminder(reminder) }
+                    )
+                    Rectangle().fill(ConsoleTheme.divider).frame(height: 1)
+                }
+
                 taskContent
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -152,8 +162,34 @@ struct AttentionConsoleView: View {
                     .allowsHitTesting(false)
             )
         }
+        .overlay {
+            if !console.missedReminders.isEmpty {
+                ZStack {
+                    Color.black.opacity(0.62)
+                        .ignoresSafeArea()
+
+                    MissedRemindersView(
+                        reminders: console.missedReminders,
+                        onOpen: open,
+                        onSnooze: { console.snooze($0, until: $1) },
+                        onDismiss: console.dismissReminder,
+                        onDismissAll: console.dismissAllMissedReminders
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(ConsoleTheme.divider)
+                    )
+                    .shadow(color: .black.opacity(0.45), radius: 24, y: 10)
+                    .padding(16)
+                }
+            }
+        }
         .onAppear { console.start() }
         .onDisappear { console.stop() }
+        .onChange(of: console.reminderSoundSequence) { _, _ in
+            playReminderSound()
+        }
         .onChange(of: availableProjectIDs) { _, availableIDs in
             selectedProjectIDs.formIntersection(availableIDs)
             pruneProjectOrder(to: availableIDs)
@@ -493,7 +529,6 @@ struct AttentionConsoleView: View {
                         ProjectSectionView(
                             section: section,
                             isCollapsed: collapsedProjects.contains(section.id),
-                            selectedTaskID: selectedTaskID,
                             expandedTaskIDs: expandedTaskIDs,
                             isTaskMonitored: console.isMonitored,
                             onToggle: { toggle(section.id) },
@@ -513,6 +548,11 @@ struct AttentionConsoleView: View {
                             onSetNote: { taskID, note in
                                 console.setNote(note, for: taskID)
                             },
+                            reminderForTask: console.reminder,
+                            onSetReminder: { taskID, title, date in
+                                console.setReminder(for: taskID, title: title, at: date)
+                            },
+                            onRemoveReminder: console.removeReminder,
                             onTogglePreview: togglePreview
                         )
                     }
@@ -617,7 +657,6 @@ struct AttentionConsoleView: View {
 
     private func togglePreview(_ taskID: String) {
         withAnimation(.easeInOut(duration: 0.18)) {
-            selectedTaskID = taskID
             if expandedTaskIDs.contains(taskID) {
                 expandedTaskIDs.remove(taskID)
             } else {
@@ -734,8 +773,21 @@ struct AttentionConsoleView: View {
 
     private func open(_ task: CodexTask) {
         guard launcher.openTask(id: task.id) else { return }
-        selectedTaskID = task.id
         console.markInactiveAfterOpening(task.id)
+    }
+
+    private func open(_ reminder: TaskReminder) {
+        guard launcher.openTask(id: reminder.taskID) else { return }
+        console.markInactiveAfterOpening(reminder.taskID)
+        console.dismissReminder(reminder)
+    }
+
+    private func playReminderSound() {
+        if let sound = NSSound(named: NSSound.Name("Glass")) {
+            sound.play()
+        } else {
+            NSSound.beep()
+        }
     }
 
     private func startTask(in section: ProjectSection) {

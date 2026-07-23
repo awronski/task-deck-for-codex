@@ -49,10 +49,548 @@ struct ErrorStrip: View {
     }
 }
 
+private struct ActionTooltipModifier: ViewModifier {
+    let text: String
+    let width: CGFloat?
+    let lineLimit: Int
+    let isEnabled: Bool
+
+    @State private var isHovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .bottomTrailing) {
+                if isEnabled && isHovered {
+                    Text(text)
+                        .consoleFont(size: 11.5, weight: .medium)
+                        .foregroundStyle(ConsoleTheme.primaryText)
+                        .lineLimit(lineLimit)
+                        .multilineTextAlignment(.leading)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .frame(width: width, alignment: .leading)
+                        .fixedSize(horizontal: width == nil, vertical: true)
+                        .background(ConsoleTheme.background, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.white.opacity(0.14))
+                        )
+                        .shadow(color: .black.opacity(0.45), radius: 5, y: 2)
+                        .offset(y: -31)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+            .onHover { isHovered = $0 }
+            .zIndex(isEnabled && isHovered ? 1 : 0)
+    }
+}
+
+private extension View {
+    func actionTooltip(
+        _ text: String,
+        width: CGFloat? = nil,
+        lineLimit: Int = 1,
+        isEnabled: Bool
+    ) -> some View {
+        modifier(ActionTooltipModifier(
+            text: text,
+            width: width,
+            lineLimit: lineLimit,
+            isEnabled: isEnabled
+        ))
+    }
+}
+
+struct ReminderBanner: View {
+    let reminder: TaskReminder
+    let onOpen: () -> Void
+    let onSnooze: (Date) -> Bool
+    let onDismiss: () -> Void
+
+    @State private var isSnoozePresented = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "clock")
+                .consoleFont(size: 18, weight: .medium)
+                .foregroundStyle(ConsoleTheme.blue)
+                .frame(width: 28, height: 28)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("REMINDER")
+                    .consoleFont(size: 10, weight: .semibold)
+                    .foregroundStyle(ConsoleTheme.blue)
+                    .tracking(0.35)
+                Text(reminder.title)
+                    .consoleFont(size: 14.5, weight: .medium)
+                    .foregroundStyle(ConsoleTheme.primaryText)
+                    .lineLimit(2)
+                Text("Due \(reminder.dueAt.formatted(date: .omitted, time: .shortened))")
+                    .consoleFont(size: 11.5)
+                    .foregroundStyle(ConsoleTheme.secondaryText)
+
+                HStack(spacing: 8) {
+                    Button("Open task", action: onOpen)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+
+                    Button("Snooze…") {
+                        isSnoozePresented = true
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .popover(isPresented: $isSnoozePresented, arrowEdge: .top) {
+                        ReminderScheduleEditor(
+                            title: "Snooze reminder",
+                            scheduledAt: nil,
+                            actionTitle: "Snooze",
+                            onSchedule: { date in
+                                let didSnooze = onSnooze(date)
+                                if didSnooze { isSnoozePresented = false }
+                                return didSnooze
+                            }
+                        )
+                    }
+
+                    Button("Dismiss", action: onDismiss)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(ConsoleTheme.secondaryText)
+                }
+                .padding(.top, 4)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .consoleFont(size: 11, weight: .semibold)
+                    .foregroundStyle(ConsoleTheme.secondaryText)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss reminder")
+            .accessibilityLabel("Dismiss reminder for \(reminder.title)")
+        }
+        .padding(12)
+        .background(ConsoleTheme.blue.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(ConsoleTheme.blue.opacity(0.32)))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+struct MissedRemindersView: View {
+    let reminders: [TaskReminder]
+    let onOpen: (TaskReminder) -> Void
+    let onSnooze: (TaskReminder, Date) -> Bool
+    let onDismiss: (TaskReminder) -> Void
+    let onDismissAll: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Missed reminders")
+                        .consoleFont(size: 19, weight: .semibold)
+                        .foregroundStyle(ConsoleTheme.primaryText)
+                    Text("These reminders became due while Task Deck was closed.")
+                        .consoleFont(size: 12.5)
+                        .foregroundStyle(ConsoleTheme.secondaryText)
+                }
+                Spacer(minLength: 12)
+                Text("\(reminders.count)")
+                    .consoleFont(size: 11, weight: .semibold)
+                    .foregroundStyle(ConsoleTheme.blue)
+                    .padding(.horizontal, 7)
+                    .frame(height: 20)
+                    .background(ConsoleTheme.blue.opacity(0.12), in: Capsule())
+
+                Button(action: onDismissAll) {
+                    Image(systemName: "xmark")
+                        .consoleFont(size: 11, weight: .semibold)
+                        .foregroundStyle(ConsoleTheme.secondaryText)
+                        .frame(width: 24, height: 24)
+                        .background(ConsoleTheme.divider.opacity(0.8), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss all reminders")
+            }
+            .padding(18)
+
+            Rectangle().fill(ConsoleTheme.divider).frame(height: 1)
+
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(reminders) { reminder in
+                        MissedReminderRow(
+                            reminder: reminder,
+                            onOpen: { onOpen(reminder) },
+                            onSnooze: { onSnooze(reminder, $0) },
+                            onDismiss: { onDismiss(reminder) }
+                        )
+                        if reminder.id != reminders.last?.id {
+                            Rectangle()
+                                .fill(ConsoleTheme.divider)
+                                .frame(height: 1)
+                                .padding(.leading, 52)
+                        }
+                    }
+                }
+            }
+            .frame(height: min(CGFloat(reminders.count) * 64, 420))
+
+            Rectangle().fill(ConsoleTheme.divider).frame(height: 1)
+
+            HStack {
+                Spacer()
+                Button("Dismiss all", action: onDismissAll)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                if let first = reminders.first {
+                    Button("Open first task") { onOpen(first) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
+            }
+            .padding(14)
+        }
+        .frame(minWidth: 330, idealWidth: 430, maxWidth: 430)
+        .background(ConsoleTheme.background)
+    }
+}
+
+private struct MissedReminderRow: View {
+    let reminder: TaskReminder
+    let onOpen: () -> Void
+    let onSnooze: (Date) -> Bool
+    let onDismiss: () -> Void
+
+    @State private var isSnoozePresented = false
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "clock")
+                .consoleFont(size: 16, weight: .medium)
+                .foregroundStyle(ConsoleTheme.blue)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(reminder.title)
+                    .consoleFont(size: 13.5, weight: .medium)
+                    .foregroundStyle(ConsoleTheme.primaryText)
+                    .lineLimit(2)
+                Text(reminder.dueAt.formatted(date: .abbreviated, time: .shortened))
+                    .consoleFont(size: 11.5)
+                    .foregroundStyle(ConsoleTheme.secondaryText)
+            }
+
+            Spacer(minLength: 8)
+
+            Button("Open", action: onOpen)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+            Button("Snooze…") {
+                isSnoozePresented = true
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .popover(isPresented: $isSnoozePresented, arrowEdge: .top) {
+                ReminderScheduleEditor(
+                    title: "Snooze reminder",
+                    scheduledAt: nil,
+                    actionTitle: "Snooze",
+                    onSchedule: { date in
+                        let didSnooze = onSnooze(date)
+                        if didSnooze { isSnoozePresented = false }
+                        return didSnooze
+                    }
+                )
+            }
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .consoleFont(size: 10, weight: .semibold)
+                    .foregroundStyle(ConsoleTheme.secondaryText)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss reminder")
+            .accessibilityLabel("Dismiss reminder for \(reminder.title)")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+    }
+}
+
+private enum ReminderScheduleMode: Equatable {
+    case relative
+    case exact
+}
+
+struct ReminderScheduleEditor: View {
+    let title: String
+    let scheduledAt: Date?
+    let actionTitle: String
+    let onSchedule: (Date) -> Bool
+    var onRemove: (() -> Void)?
+
+    @State private var relativeValue = 5
+    @State private var relativeUnit = ReminderOffsetUnit.minutes
+    @State private var exactDate = Date.now.addingTimeInterval(3_600)
+    @State private var minimumDate = Date.now
+    @State private var validationMessage: String?
+    @State private var scheduleMode = ReminderScheduleMode.relative
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(title)
+                .consoleFont(size: 17, weight: .semibold)
+                .foregroundStyle(ConsoleTheme.primaryText)
+
+            if let scheduledAt {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("CURRENT REMINDER")
+                        .consoleFont(size: 10.5, weight: .semibold)
+                        .foregroundStyle(ConsoleTheme.secondaryText)
+
+                    HStack(spacing: 12) {
+                        Label(
+                            scheduledAt.formatted(date: .abbreviated, time: .shortened),
+                            systemImage: "clock"
+                        )
+                        .consoleFont(size: 14, weight: .medium)
+                        .foregroundStyle(ConsoleTheme.blue)
+
+                        Spacer(minLength: 8)
+
+                        if let onRemove {
+                            Button(action: onRemove) {
+                                Image(systemName: "trash")
+                                    .consoleFont(size: 13, weight: .medium)
+                                    .foregroundStyle(ConsoleTheme.secondaryText)
+                                    .frame(width: 30, height: 30)
+                                    .background(
+                                        ConsoleTheme.raisedSurface,
+                                        in: RoundedRectangle(cornerRadius: 7)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 7)
+                                            .stroke(ConsoleTheme.divider)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .help("Remove reminder")
+                            .accessibilityLabel("Remove reminder")
+                        }
+                    }
+                }
+
+                Rectangle()
+                    .fill(ConsoleTheme.divider)
+                    .frame(height: 1)
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(scheduleSectionTitle)
+                    .consoleFont(size: 10.5, weight: .semibold)
+                    .foregroundStyle(ConsoleTheme.secondaryText)
+                Text(scheduleSectionDescription)
+                    .consoleFont(size: 12)
+                    .foregroundStyle(ConsoleTheme.secondaryText)
+            }
+
+            relativeScheduleCard
+            exactScheduleCard
+
+            if let validationMessage {
+                Text(validationMessage)
+                    .consoleFont(size: 11)
+                    .foregroundStyle(ConsoleTheme.red)
+            }
+
+            Button(action: scheduleSelected) {
+                Text(primaryActionTitle)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(ConsoleTheme.blue)
+            .disabled(scheduleMode == .relative && relativeValue < 1)
+        }
+        .padding(18)
+        .frame(width: 430)
+        .background(ConsoleTheme.surface)
+        .onAppear {
+            minimumDate = Date.now.addingTimeInterval(1)
+            exactDate = max(scheduledAt ?? Date.now.addingTimeInterval(3_600), minimumDate)
+        }
+        .onChange(of: relativeValue) { _, value in
+            relativeValue = min(max(value, 1), 99_999)
+        }
+    }
+
+    private var scheduleSectionTitle: String {
+        if scheduledAt != nil { return "REPLACE WITH" }
+        if actionTitle == "Snooze" { return "SNOOZE UNTIL" }
+        return "SET FOR"
+    }
+
+    private var scheduleSectionDescription: String {
+        scheduledAt == nil
+            ? "Choose one way to schedule this reminder."
+            : "Choose one way to set the new reminder."
+    }
+
+    private var primaryActionTitle: String {
+        "\(actionTitle) reminder"
+    }
+
+    private var relativeScheduleCard: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            scheduleModeLabel(
+                mode: .relative,
+                title: "After a delay",
+                subtitle: "Relative to now"
+            )
+
+            HStack(spacing: 10) {
+                TextField("Amount", value: $relativeValue, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 112)
+                    .accessibilityLabel("Reminder amount")
+
+                Picker("Unit", selection: $relativeUnit) {
+                    Text("Minutes").tag(ReminderOffsetUnit.minutes)
+                    Text("Hours").tag(ReminderOffsetUnit.hours)
+                    Text("Days").tag(ReminderOffsetUnit.days)
+                }
+                .labelsHidden()
+                .frame(width: 132)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 30)
+            .allowsHitTesting(scheduleMode == .relative)
+        }
+        .padding(14)
+        .background(cardBackground(for: .relative))
+        .overlay(cardBorder(for: .relative))
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .onTapGesture { select(.relative) }
+    }
+
+    private var exactScheduleCard: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            scheduleModeLabel(
+                mode: .exact,
+                title: "On a date",
+                subtitle: "Exact date and time"
+            )
+
+            DatePicker(
+                "",
+                selection: $exactDate,
+                in: minimumDate...,
+                displayedComponents: [.date, .hourAndMinute]
+            )
+            .labelsHidden()
+            .datePickerStyle(.compact)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 30)
+            .allowsHitTesting(scheduleMode == .exact)
+        }
+        .padding(14)
+        .background(cardBackground(for: .exact))
+        .overlay(cardBorder(for: .exact))
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .onTapGesture { select(.exact) }
+    }
+
+    private func scheduleModeLabel(
+        mode: ReminderScheduleMode,
+        title: String,
+        subtitle: String
+    ) -> some View {
+        HStack(alignment: .top, spacing: 11) {
+            Button { select(mode) } label: {
+                Image(systemName: scheduleMode == mode ? "record.circle" : "circle")
+                    .consoleFont(size: 18, weight: .medium)
+                    .foregroundStyle(
+                        scheduleMode == mode ? ConsoleTheme.blue : ConsoleTheme.secondaryText
+                    )
+                    .frame(width: 19, height: 19)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Use \(title.lowercased())")
+            .accessibilityValue(scheduleMode == mode ? "Selected" : "Not selected")
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .consoleFont(size: 13.5, weight: .semibold)
+                    .foregroundStyle(ConsoleTheme.primaryText)
+                Text(subtitle)
+                    .consoleFont(size: 11.5)
+                    .foregroundStyle(ConsoleTheme.secondaryText)
+            }
+        }
+    }
+
+    private func cardBackground(for mode: ReminderScheduleMode) -> some View {
+        RoundedRectangle(cornerRadius: 10)
+            .fill(
+                scheduleMode == mode
+                    ? ConsoleTheme.blue.opacity(0.045)
+                    : ConsoleTheme.raisedSurface
+            )
+    }
+
+    private func cardBorder(for mode: ReminderScheduleMode) -> some View {
+        RoundedRectangle(cornerRadius: 10)
+            .stroke(
+                scheduleMode == mode ? ConsoleTheme.blue : ConsoleTheme.divider,
+                lineWidth: scheduleMode == mode ? 1.5 : 1
+            )
+    }
+
+    private func select(_ mode: ReminderScheduleMode) {
+        scheduleMode = mode
+        validationMessage = nil
+    }
+
+    private func scheduleSelected() {
+        switch scheduleMode {
+        case .relative:
+            scheduleRelative()
+        case .exact:
+            scheduleExact()
+        }
+    }
+
+    private func scheduleRelative() {
+        guard let date = relativeUnit.date(after: .now, value: relativeValue),
+              onSchedule(date)
+        else {
+            validationMessage = "Choose a future time."
+            return
+        }
+        validationMessage = nil
+    }
+
+    private func scheduleExact() {
+        guard onSchedule(exactDate) else {
+            validationMessage = "Choose a future time."
+            return
+        }
+        validationMessage = nil
+    }
+}
+
 struct ProjectSectionView: View {
     let section: ProjectSection
     let isCollapsed: Bool
-    let selectedTaskID: String?
     let expandedTaskIDs: Set<String>
     let isTaskMonitored: (String) -> Bool
     let onToggle: () -> Void
@@ -66,6 +604,9 @@ struct ProjectSectionView: View {
     let onSetPriority: (String, TaskPriority) -> Void
     let noteForTask: (String) -> String
     let onSetNote: (String, String) -> Void
+    let reminderForTask: (String) -> TaskReminder?
+    let onSetReminder: (String, String, Date) -> Bool
+    let onRemoveReminder: (String) -> Void
     let onTogglePreview: (String) -> Void
 
     @State private var isDropTarget = false
@@ -171,7 +712,6 @@ struct ProjectSectionView: View {
                 ForEach(section.tasks) { task in
                     TaskRow(
                         task: task,
-                        isSelected: selectedTaskID == task.id,
                         isPreviewExpanded: expandedTaskIDs.contains(task.id),
                         isMonitored: isTaskMonitored(task.id),
                         onOpen: { onOpen(task) },
@@ -182,6 +722,9 @@ struct ProjectSectionView: View {
                         onSetPriority: { onSetPriority(task.id, $0) },
                         note: noteForTask(task.id),
                         onSetNote: { onSetNote(task.id, $0) },
+                        reminder: reminderForTask(task.id),
+                        onSetReminder: { onSetReminder(task.id, task.title, $0) },
+                        onRemoveReminder: { onRemoveReminder(task.id) },
                         onTogglePreview: { onTogglePreview(task.id) }
                     )
                 }
@@ -197,7 +740,6 @@ struct ProjectSectionView: View {
 
 private struct TaskRow: View {
     let task: CodexTask
-    let isSelected: Bool
     let isPreviewExpanded: Bool
     let isMonitored: Bool
     let onOpen: () -> Void
@@ -208,6 +750,9 @@ private struct TaskRow: View {
     let onSetPriority: (TaskPriority) -> Void
     let note: String
     let onSetNote: (String) -> Void
+    let reminder: TaskReminder?
+    let onSetReminder: (Date) -> Bool
+    let onRemoveReminder: () -> Void
     let onTogglePreview: () -> Void
 
     @State private var isHovered = false
@@ -215,6 +760,7 @@ private struct TaskRow: View {
     @State private var isTitleHovered = false
     @State private var isFlagPickerPresented = false
     @State private var isNoteEditorPresented = false
+    @State private var isReminderEditorPresented = false
     @State private var draftTitle = ""
     @State private var draftNote = ""
     @FocusState private var isTitleFocused: Bool
@@ -279,9 +825,9 @@ private struct TaskRow: View {
                 .padding(.trailing, 16)
 
             if isEditingTitle {
-                Color.clear
-                    .frame(width: 50, height: 26)
+                Color.clear.frame(width: 75, height: 26)
             } else {
+                reminderButton
                 editButton
                 flagPickerButton
             }
@@ -305,14 +851,12 @@ private struct TaskRow: View {
     }
 
     private var rowFill: Color {
-        if isSelected { return ConsoleTheme.selectedFill }
         if isPreviewExpanded { return ConsoleTheme.color(for: task.status).opacity(0.055) }
         if isHovered { return Color.white.opacity(0.025) }
         return .clear
     }
 
     private var rowStroke: Color {
-        if isSelected { return ConsoleTheme.blue.opacity(0.17) }
         if isPreviewExpanded { return ConsoleTheme.color(for: task.status).opacity(0.20) }
         return .clear
     }
@@ -441,6 +985,57 @@ private struct TaskRow: View {
         .accessibilityValue(task.priority.title)
     }
 
+    private var reminderButton: some View {
+        Button {
+            isReminderEditorPresented = true
+        } label: {
+            Image(systemName: "clock")
+                .consoleFont(size: 14, weight: .medium)
+                .foregroundStyle(
+                    reminder == nil
+                        ? ConsoleTheme.secondaryText.opacity(isHovered ? 1 : 0.55)
+                        : ConsoleTheme.blue
+                )
+                .frame(width: 25, height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $isReminderEditorPresented, arrowEdge: .bottom) {
+            ReminderScheduleEditor(
+                title: reminder == nil ? "Set reminder" : "Change reminder",
+                scheduledAt: reminder?.dueAt,
+                actionTitle: reminder == nil ? "Set" : "Replace",
+                onSchedule: { date in
+                    let didSchedule = onSetReminder(date)
+                    if didSchedule { isReminderEditorPresented = false }
+                    return didSchedule
+                },
+                onRemove: reminder.map { _ in
+                    {
+                        onRemoveReminder()
+                        isReminderEditorPresented = false
+                    }
+                }
+            )
+        }
+        .actionTooltip(reminderHelp, isEnabled: !isReminderEditorPresented)
+        .frame(width: 25, height: 26)
+        .accessibilityLabel(
+            reminder == nil
+                ? "Set reminder for \(task.title)"
+                : "Change reminder for \(task.title)"
+        )
+        .accessibilityValue(
+            reminder.map { $0.dueAt.formatted(date: .abbreviated, time: .shortened) }
+                ?? "No reminder"
+        )
+    }
+
+    private var reminderHelp: String {
+        guard let reminder else { return "Set reminder" }
+        return "Reminder \(reminder.dueAt.formatted(date: .abbreviated, time: .shortened))"
+    }
+
     private var noteButton: some View {
         Button {
             draftNote = note
@@ -460,7 +1055,13 @@ private struct TaskRow: View {
         .popover(isPresented: $isNoteEditorPresented, arrowEdge: .bottom) {
             noteEditor
         }
-        .help(note.isEmpty ? "Add note" : "Edit note")
+        .actionTooltip(
+            note.isEmpty ? "Add note" : note,
+            width: note.isEmpty ? nil : 260,
+            lineLimit: note.isEmpty ? 1 : 3,
+            isEnabled: !isNoteEditorPresented
+        )
+        .frame(width: 25, height: 26)
         .accessibilityLabel("\(noteActionTitle) note for \(task.title)")
         .accessibilityValue(note.isEmpty ? "No note" : "Note added")
     }
@@ -535,6 +1136,8 @@ private struct TaskRow: View {
         .onAppear {
             draftNote = note
             Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(100))
+                guard isNoteEditorPresented else { return }
                 isNoteFocused = true
             }
         }

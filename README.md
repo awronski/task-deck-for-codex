@@ -1,45 +1,79 @@
 # Task Deck for Codex
 
-Task Deck for Codex is an unofficial native macOS companion for keeping active Codex tasks visible without navigating the full Codex sidebar. It groups tasks by project, highlights work that needs attention, and opens tasks directly in Codex.
+**Your control room for Codex tasks.**
+
+Task Deck for Codex is a native macOS companion that helps you orchestrate many Codex tasks without losing focus. It brings every task into one clear view, shows what each task is doing in real time, and helps you decide what deserves your attention now.
+
+Pin the work that matters, highlight priorities, capture observations, and add reminders for anything you need to revisit. You stay focused on the current task while Task Deck keeps the rest of your Codex work visible and easy to recover.
 
 ## Download
 
 **[Download Task Deck for Codex (.dmg) →](https://github.com/awronski/task-deck-for-codex/releases/latest/download/TaskDeckForCodex.dmg)**
 
-The ready-made build is Developer ID signed and Apple notarized. Open the DMG and drag Task Deck for Codex to Applications—building from source is optional.
+The ready-made app is Developer ID signed and Apple notarized. Open the DMG and drag Task Deck for Codex to Applications—no source build is required. Task Deck makes no network requests, so your task data and personal notes stay on your Mac.
+
+## See your Codex work at a glance
 
 <p align="center">
   <a href="docs/images/task-deck-attention-states-expanded.png">
-    <img src="docs/images/task-deck-attention-states-expanded.png" alt="Task Deck for Codex with an expanded activity preview" width="440">
+    <img src="docs/images/task-deck-attention-states-expanded.png" alt="Live Codex task activity in Task Deck" width="46%">
+  </a>
+  &nbsp;
+  <a href="docs/images/task-deck-attention-states-reminder.png">
+    <img src="docs/images/task-deck-attention-states-reminder.png" alt="Setting a task reminder in Task Deck" width="46%">
   </a>
 </p>
 
+<p align="center">
+  <sub><strong>Follow live activity</strong> without opening every task · <strong>Add reminders</strong> so important work returns at the right time</sub>
+</p>
+
 <details>
-<summary><strong>More screenshots</strong> — task states and filters</summary>
+<summary><strong>More views</strong> — task overview and focused filtering</summary>
 <br>
 <p align="center">
   <a href="docs/images/task-deck-attention-states.png">
-    <img src="docs/images/task-deck-attention-states.png" alt="Task Deck for Codex showing task attention states" width="340">
+    <img src="docs/images/task-deck-attention-states.png" alt="Task Deck overview with live Codex task states" width="46%">
   </a>
+  &nbsp;
   <a href="docs/images/task-deck-attention-states-filters.png">
-    <img src="docs/images/task-deck-attention-states-filters.png" alt="Task Deck for Codex task filters" width="340">
+    <img src="docs/images/task-deck-attention-states-filters.png" alt="Filtering Codex tasks by type, project, and status" width="46%">
   </a>
 </p>
 </details>
 
-## Features
+## Stay in control of every task
 
-- Console and All Tasks views with search and multi-select filters
-- Project grouping, persistent project ordering, and a dedicated Chats group
-- Persistent task pins and local title overrides
-- Persistent no-flag, yellow, orange, and red task flags
-- Persistent private notes for pausing and resuming task context
-- Task archiving with undo
-- Live working, input, permission, finished, and error states
-- Expandable inline activity previews with independent and bulk controls
-- Elapsed working time and relative creation time
-- Configurable font family and font size
-- New-task shortcuts and direct navigation to tasks in Codex
+### See what Codex is doing in real time
+
+Working, waiting, finished, and failed tasks are visible together. Expand any task to read its current activity and recent updates, then jump directly into Codex only when you need to intervene.
+
+### Keep the most important work in focus
+
+Pin important tasks to your Console and use yellow, orange, or red flags to make priorities unmistakable. Your highest-value task stays easy to find even while many other tasks continue in parallel.
+
+### Preserve the context you do not want to lose
+
+Add a private note when you discover a constraint, finish part of the work, or need to wait for external information. Your observations remain attached to the task, ready when you return days later.
+
+### Bring work back at the right time
+
+Set a reminder after a delay or for an exact date and time. Snooze when necessary, recover reminders missed while the app or Mac was off, and bring the associated task back into your Console when it needs attention.
+
+### Manage many tasks without endless scrolling
+
+Group tasks by project, search instantly, filter by task type or status, and collapse or expand activity in bulk. The Console keeps your chosen tasks close while All Tasks provides the complete picture.
+
+### Move from overview to action
+
+Open any task directly in Codex, start a new task inside the right project, rename tasks for clarity, or archive completed work with undo. Task Deck removes the navigation overhead between noticing something and acting on it.
+
+## More useful controls
+
+- Persistent project ordering and a dedicated Chats group
+- Relative creation times and elapsed working time
+- Local task-title overrides, flags, notes, reminders, and pins
+- Configurable font family and size
 - Automatic refresh from Codex's local task data
 
 ## Requirements
@@ -47,12 +81,28 @@ The ready-made build is Developer ID signed and Apple notarized. Open the DMG an
 - macOS 26 or later
 - Codex for macOS
 
+## Privacy and local data
+
+Task Deck for Codex makes no network requests. It accesses Codex only through local files, Codex's bundled command-line tool, and local desktop IPC.
+
+Codex state is read locally from:
+
+- `~/.codex/state_5.sqlite`
+- `~/.codex/.codex-global-state.json`
+- Session JSONL files under `~/.codex/sessions/`
+
+Archiving and undo use Codex's bundled command-line tool so Codex moves session files and updates its state consistently. Pins, title overrides, flags, notes, reminders, project order, and other Task Deck preferences are stored locally in macOS `UserDefaults`.
+
+## Compatibility and unofficial status
+
 > [!WARNING]
-> This project is not affiliated with, endorsed by, or supported by OpenAI. It relies on undocumented Codex database, session, and local desktop IPC formats that may change without notice.
+> Task Deck for Codex is not affiliated with, endorsed by, or supported by OpenAI. It relies on undocumented Codex database, session, and local desktop IPC formats that may change without notice.
+
+A Codex update may temporarily affect task discovery, status reporting, or immediate sidebar refresh. Keeping this integration local limits its reach: Task Deck does not send your data to an external service.
 
 ## Build from source (optional)
 
-Most users should use the ready-made DMG above. Building from source is only necessary if you want to develop or inspect the project. It requires Xcode 26 with Swift 6.2.
+Most users should install the signed and notarized DMG. Building from source is useful only if you want to inspect or develop the project. It requires Xcode 26 with Swift 6.2.
 
 ```sh
 git clone https://github.com/awronski/task-deck-for-codex.git
@@ -60,7 +110,7 @@ cd task-deck-for-codex
 ./script/build_and_run.sh
 ```
 
-The helper builds an ad-hoc-signed app and launches it. To run the tests:
+The helper creates an ad-hoc-signed local app and launches it. Run the tests with:
 
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
@@ -87,20 +137,6 @@ NOTARY_PROFILE="your-notary-profile" \
 The script writes `dist/TaskDeckForCodex.dmg`. With `NOTARIZE=1`, it signs, submits, staples, and verifies both the app and DMG. Generated app and DMG artifacts are ignored by Git; the default ad-hoc signature is for local testing only.
 
 </details>
-
-## Privacy and local data
-
-Task Deck for Codex makes no network requests. It accesses Codex only through local files, Codex's bundled command-line tool, and local desktop IPC. It reads Codex state locally from:
-
-- `~/.codex/state_5.sqlite`
-- `~/.codex/.codex-global-state.json`
-- session JSONL files under `~/.codex/sessions/`
-
-Archiving and undo use Codex's bundled command-line tool so Codex moves the session file and updates its state consistently. The companion also sends a local desktop refresh notification when Codex is running. Pins, task-title overrides, task flags, notes, project order, and other companion preferences are stored locally in macOS `UserDefaults`.
-
-## Compatibility
-
-Task Deck for Codex relies on undocumented internal Codex database, session, and local desktop IPC formats. A Codex update may change those formats and temporarily break task discovery, status reporting, or immediate sidebar refresh.
 
 ## License
 

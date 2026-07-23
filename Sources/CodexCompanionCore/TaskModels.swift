@@ -48,6 +48,36 @@ public enum TaskPriority: String, CaseIterable, Hashable, Sendable {
     }
 }
 
+public enum ReminderOffsetUnit: String, CaseIterable, Hashable, Sendable {
+    case minutes
+    case hours
+    case days
+
+    public func date(after date: Date, value: Int, calendar: Calendar = .current) -> Date? {
+        guard value > 0 else { return nil }
+        let component: Calendar.Component = switch self {
+        case .minutes: .minute
+        case .hours: .hour
+        case .days: .day
+        }
+        return calendar.date(byAdding: component, value: value, to: date)
+    }
+}
+
+public struct TaskReminder: Codable, Equatable, Identifiable, Sendable {
+    public let taskID: String
+    public let title: String
+    public let dueAt: Date
+
+    public var id: String { taskID }
+
+    public init(taskID: String, title: String, dueAt: Date) {
+        self.taskID = taskID
+        self.title = title
+        self.dueAt = dueAt
+    }
+}
+
 public struct TaskActivityEvent: Equatable, Sendable {
     public let title: String
     public let occurredAt: Date?

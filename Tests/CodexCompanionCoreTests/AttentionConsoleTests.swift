@@ -191,6 +191,184 @@ struct AttentionConsoleTests {
     }
 
     @Test
+    func reminderSchedulingPersistsAndReplacesTheTaskReminder() async {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let task = codexTask("task", title: "Deploy release", status: .inactive)
+        let reminders = TestTaskReminderStorage()
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [task]),
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            reminderStorage: reminders,
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await console.refresh()
+
+        let firstDate = now.addingTimeInterval(5 * 60)
+        let replacementDate = now.addingTimeInterval(2 * 3_600)
+        #expect(console.setReminder(for: task.id, title: task.title, at: firstDate, now: now))
+        #expect(console.setReminder(for: task.id, title: task.title, at: replacementDate, now: now))
+
+        #expect(console.reminder(for: task.id)?.dueAt == replacementDate)
+        #expect(reminders.load().count == 1)
+        #expect(reminders.load()[task.id]?.dueAt == replacementDate)
+        #expect(!console.setReminder(for: task.id, title: task.title, at: now, now: now))
+
+        let relaunched = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [task]),
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            reminderStorage: reminders,
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        #expect(relaunched.reminder(for: task.id)?.dueAt == replacementDate)
+    }
+
+    @Test
+    func dueReminderStaysStoredUntilDismissedAndIsPinnedAndPresented() async throws {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let dueAt = now.addingTimeInterval(60)
+        let task = codexTask("task", title: "Deploy release", status: .inactive)
+        let reminders = TestTaskReminderStorage()
+        let visibility = TestVisibilityStorage(
+            ledger: VisibilityLedger(
+                isBootstrapped: true,
+                knownTaskIDs: [task.id],
+                hiddenTaskIDs: [task.id]
+            )
+        )
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [task]),
+            archiver: TestTaskArchiver(),
+            storage: visibility,
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            reminderStorage: reminders,
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await console.refresh()
+        #expect(console.setReminder(for: task.id, title: "Original title", at: dueAt, now: now))
+
+        console.processDueReminders(at: now.addingTimeInterval(30), groupingAsMissed: false)
+        #expect(console.reminder(for: task.id)?.dueAt == dueAt)
+        #expect(!console.isMonitored(task.id))
+
+        console.processDueReminders(at: dueAt, groupingAsMissed: false)
+
+        #expect(console.reminder(for: task.id)?.dueAt == dueAt)
+        #expect(reminders.load()[task.id]?.dueAt == dueAt)
+        #expect(console.isMonitored(task.id))
+        #expect(console.currentTriggeredReminder == TaskReminder(taskID: task.id, title: task.title, dueAt: dueAt))
+        #expect(console.missedReminders.isEmpty)
+        #expect(console.reminderSoundSequence == 1)
+
+        console.processDueReminders(at: dueAt.addingTimeInterval(30), groupingAsMissed: false)
+        #expect(console.triggeredReminders.count == 1)
+        #expect(console.reminderSoundSequence == 1)
+
+        let relaunched = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [task]),
+            archiver: TestTaskArchiver(),
+            storage: visibility,
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            reminderStorage: reminders,
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await relaunched.refresh()
+        relaunched.processDueReminders(at: dueAt.addingTimeInterval(30), groupingAsMissed: true)
+        let recoveredReminder = try #require(relaunched.missedReminders.first)
+        #expect(recoveredReminder.title == task.title)
+
+        relaunched.dismissReminder(recoveredReminder)
+        #expect(relaunched.missedReminders.isEmpty)
+        #expect(relaunched.reminder(for: task.id) == nil)
+        #expect(reminders.load().isEmpty)
+    }
+
+    @Test
+    func missedRemindersAreGroupedInDueOrderAndPinned() async {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let first = codexTask("first", title: "First", status: .inactive)
+        let second = codexTask("second", title: "Second", status: .inactive)
+        let reminders = TestTaskReminderStorage(reminders: [
+            second.id: TaskReminder(taskID: second.id, title: second.title, dueAt: now.addingTimeInterval(-60)),
+            first.id: TaskReminder(taskID: first.id, title: first.title, dueAt: now.addingTimeInterval(-120)),
+        ])
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [first, second]),
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(ledger: VisibilityLedger(isBootstrapped: true)),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            reminderStorage: reminders,
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await console.refresh()
+
+        console.processDueReminders(at: now, groupingAsMissed: true)
+
+        #expect(console.missedReminders.map(\.taskID) == [first.id, second.id])
+        #expect(console.triggeredReminders.isEmpty)
+        #expect(console.isMonitored(first.id))
+        #expect(console.isMonitored(second.id))
+        #expect(reminders.load().count == 2)
+        #expect(console.reminderSoundSequence == 1)
+
+        console.processDueReminders(at: now, groupingAsMissed: true)
+        #expect(console.missedReminders.map(\.taskID) == [first.id, second.id])
+        #expect(console.reminderSoundSequence == 1)
+
+        let relaunched = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [first, second]),
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(ledger: VisibilityLedger(isBootstrapped: true)),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            reminderStorage: reminders,
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await relaunched.refresh()
+        relaunched.processDueReminders(at: now, groupingAsMissed: true)
+        #expect(relaunched.missedReminders.map(\.taskID) == [first.id, second.id])
+
+        relaunched.dismissAllMissedReminders()
+        #expect(relaunched.missedReminders.isEmpty)
+        #expect(reminders.load().isEmpty)
+    }
+
+    @Test
+    func snoozingClearsTheNotificationAndPersistsTheNewExactTime() async throws {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let dueAt = now.addingTimeInterval(60)
+        let snoozedUntil = now.addingTimeInterval(3 * 86_400)
+        let task = codexTask("task", title: "Deploy release", status: .inactive)
+        let reminders = TestTaskReminderStorage()
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [task]),
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(ledger: VisibilityLedger(isBootstrapped: true)),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            reminderStorage: reminders,
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await console.refresh()
+        #expect(console.setReminder(for: task.id, title: task.title, at: dueAt, now: now))
+        console.processDueReminders(at: dueAt, groupingAsMissed: false)
+        let triggered = try #require(console.currentTriggeredReminder)
+
+        #expect(console.snooze(triggered, until: snoozedUntil, now: now))
+        #expect(console.currentTriggeredReminder == nil)
+        #expect(console.reminder(for: task.id)?.dueAt == snoozedUntil)
+        #expect(reminders.load()[task.id]?.dueAt == snoozedUntil)
+    }
+
+    @Test
     func displayPreferencesPreserveActiveTaskActivity() async {
         let activity = TaskActivityPreview(headline: "Running the test suite.")
         let task = codexTask(
@@ -710,6 +888,18 @@ private final class TestTaskNoteStorage: TaskNoteStoring {
 
     func load() -> [String: String] { notes }
     func save(_ notes: [String: String]) { self.notes = notes }
+}
+
+@MainActor
+private final class TestTaskReminderStorage: TaskReminderStoring {
+    private var reminders: [String: TaskReminder]
+
+    init(reminders: [String: TaskReminder] = [:]) {
+        self.reminders = reminders
+    }
+
+    func load() -> [String: TaskReminder] { reminders }
+    func save(_ reminders: [String: TaskReminder]) { self.reminders = reminders }
 }
 
 @MainActor

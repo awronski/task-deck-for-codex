@@ -13,8 +13,6 @@ enum ConsoleTheme {
     static let red = Color(red: 1.00, green: 0.34, blue: 0.36)
     static let teal = Color(red: 0.34, green: 0.82, blue: 0.79)
     static let inactive = Color(red: 0.57, green: 0.59, blue: 0.62)
-    static let selectedFill = Color(red: 0.06, green: 0.16, blue: 0.23).opacity(0.92)
-
     static func color(for status: AttentionStatus) -> Color {
         switch status {
         case .waitingForInput, .waitingForPermission: amber

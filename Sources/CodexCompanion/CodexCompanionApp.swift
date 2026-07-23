@@ -21,6 +21,7 @@ struct TaskDeckForCodexApp: App {
         let titleStorage = UserDefaultsTaskTitleStorage()
         let priorityStorage = UserDefaultsTaskPriorityStorage()
         let noteStorage = UserDefaultsTaskNoteStorage()
+        let reminderStorage = UserDefaultsTaskReminderStorage()
         let projectOrderStorage = UserDefaultsProjectOrderStorage()
         _console = State(
             initialValue: AttentionConsole(
@@ -30,6 +31,7 @@ struct TaskDeckForCodexApp: App {
                 titleStorage: titleStorage,
                 priorityStorage: priorityStorage,
                 noteStorage: noteStorage,
+                reminderStorage: reminderStorage,
                 projectOrderStorage: projectOrderStorage
             )
         )
