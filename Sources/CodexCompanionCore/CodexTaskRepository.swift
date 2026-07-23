@@ -156,6 +156,7 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
                     isChat: resolvedProject.isChat,
                     kind: kind,
                     status: status,
+                    activity: reducer?.activity,
                     updatedAt: updatedAt,
                     workingSince: status == .working ? reducer?.workingSince : nil,
                     finishedAt: reducer?.finishedAt,

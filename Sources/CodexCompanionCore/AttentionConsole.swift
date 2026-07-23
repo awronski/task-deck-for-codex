@@ -14,10 +14,14 @@ public final class AttentionConsole {
     @ObservationIgnored private let archiver: any CodexTaskArchiving
     @ObservationIgnored private let storage: any VisibilityStoring
     @ObservationIgnored private let titleStorage: any TaskTitleStoring
+    @ObservationIgnored private let priorityStorage: any TaskPriorityStoring
+    @ObservationIgnored private let noteStorage: any TaskNoteStoring
     @ObservationIgnored private let projectOrderStorage: any ProjectOrderStoring
     @ObservationIgnored private let launchedAt: Date
     private var ledger: VisibilityLedger
     private var titleOverrides: [String: String]
+    private var priorities: [String: TaskPriority]
+    private var notes: [String: String]
     public private(set) var projectOrderIDs: [String]
     public private(set) var includedTaskKinds = CodexTaskKind.defaultVisible
     @ObservationIgnored private var pollingTask: Task<Void, Never>?
@@ -29,6 +33,8 @@ public final class AttentionConsole {
         archiver: any CodexTaskArchiving,
         storage: any VisibilityStoring,
         titleStorage: any TaskTitleStoring,
+        priorityStorage: any TaskPriorityStoring,
+        noteStorage: any TaskNoteStoring = UserDefaultsTaskNoteStorage(),
         projectOrderStorage: any ProjectOrderStoring,
         launchedAt: Date = .now
     ) {
@@ -36,15 +42,19 @@ public final class AttentionConsole {
         self.archiver = archiver
         self.storage = storage
         self.titleStorage = titleStorage
+        self.priorityStorage = priorityStorage
+        self.noteStorage = noteStorage
         self.projectOrderStorage = projectOrderStorage
         self.launchedAt = launchedAt
         self.ledger = storage.load()
         self.titleOverrides = titleStorage.load()
+        self.priorities = priorityStorage.load()
+        self.notes = noteStorage.load()
         self.projectOrderIDs = projectOrderStorage.load()
     }
 
     public var allTasks: [CodexTask] {
-        sourceTasks.map(taskWithDisplayTitle)
+        sourceTasks.map(taskWithDisplayPreferences)
     }
 
     public var monitoredTasks: [CodexTask] {
@@ -186,6 +196,35 @@ public final class AttentionConsole {
         titleStorage.save(titleOverrides)
     }
 
+    public func setPriority(_ priority: TaskPriority, for taskID: String) {
+        guard (priorities[taskID] ?? .none) != priority else { return }
+        if priority == .none {
+            priorities.removeValue(forKey: taskID)
+        } else {
+            priorities[taskID] = priority
+        }
+        priorityStorage.save(priorities)
+    }
+
+    public func note(for taskID: String) -> String {
+        notes[taskID] ?? ""
+    }
+
+    public func setNote(_ note: String, for taskID: String) {
+        let storedNote = String(note.prefix(2_000))
+        let isEmpty = storedNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let currentNote = notes[taskID] ?? ""
+        let nextNote = isEmpty ? "" : storedNote
+        guard currentNote != nextNote else { return }
+
+        if isEmpty {
+            notes.removeValue(forKey: taskID)
+        } else {
+            notes[taskID] = storedNote
+        }
+        noteStorage.save(notes)
+    }
+
     public func setProjectOrder(_ projectIDs: [String]) {
         var seenProjectIDs: Set<String> = []
         let uniqueProjectIDs = projectIDs.filter { seenProjectIDs.insert($0).inserted }
@@ -206,12 +245,13 @@ public final class AttentionConsole {
         storage.save(ledger)
     }
 
-    private func taskWithDisplayTitle(_ task: CodexTask) -> CodexTask {
+    private func taskWithDisplayPreferences(_ task: CodexTask) -> CodexTask {
         let title = titleOverrides[task.id] ?? task.title
+        let priority = priorities[task.id] ?? .none
         let status: AttentionStatus = task.status == .finished && ledger.isFinishedAcknowledged(task.id)
             ? .inactive
             : task.status
-        guard title != task.title || status != task.status else { return task }
+        guard title != task.title || priority != task.priority || status != task.status else { return task }
         return CodexTask(
             id: task.id,
             title: title,
@@ -220,7 +260,9 @@ public final class AttentionConsole {
             projectPath: task.projectPath,
             isChat: task.isChat,
             kind: task.kind,
+            priority: priority,
             status: status,
+            activity: status == .inactive ? nil : task.activity,
             updatedAt: task.updatedAt,
             workingSince: task.workingSince,
             finishedAt: task.finishedAt,

@@ -5,6 +5,11 @@ import Testing
 @Suite
 struct TaskModelTests {
     @Test
+    func tasksDefaultToNoFlag() {
+        #expect(task("task", project: "project", status: .inactive, date: .now).priority == .none)
+    }
+
+    @Test
     func generatedCodexFoldersAreGroupedAsChats() {
         let project = ProjectResolver.resolve(
             path: "/Users/test/Documents/Codex/2026-07-21/abc",

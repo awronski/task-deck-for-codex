@@ -28,6 +28,7 @@ DerivedData/
 
 # Local development artifacts
 docs/mockups/
+design-qa.md
 /*.png
 /*.jpg
 /*.jpeg

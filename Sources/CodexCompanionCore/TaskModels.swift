@@ -37,6 +37,43 @@ public enum CodexTaskKind: String, CaseIterable, Hashable, Sendable {
     public static let defaultVisible: Set<CodexTaskKind> = [.regular, .automation]
 }
 
+public enum TaskPriority: String, CaseIterable, Hashable, Sendable {
+    case none
+    case yellow
+    case orange
+    case red
+
+    public var title: String {
+        self == .none ? "No flag" : "\(rawValue.capitalized) flag"
+    }
+}
+
+public struct TaskActivityEvent: Equatable, Sendable {
+    public let title: String
+    public let occurredAt: Date?
+
+    public init(title: String, occurredAt: Date? = nil) {
+        self.title = title
+        self.occurredAt = occurredAt
+    }
+}
+
+public struct TaskActivityPreview: Equatable, Sendable {
+    public let headline: String
+    public let detail: String?
+    public let recentEvents: [TaskActivityEvent]
+
+    public init(
+        headline: String,
+        detail: String? = nil,
+        recentEvents: [TaskActivityEvent] = []
+    ) {
+        self.headline = headline
+        self.detail = detail
+        self.recentEvents = recentEvents
+    }
+}
+
 public struct CodexTask: Identifiable, Equatable, Sendable {
     public let id: String
     public let title: String
@@ -45,7 +82,9 @@ public struct CodexTask: Identifiable, Equatable, Sendable {
     public let projectPath: String
     public let isChat: Bool
     public let kind: CodexTaskKind
+    public let priority: TaskPriority
     public let status: AttentionStatus
+    public let activity: TaskActivityPreview?
     public let updatedAt: Date
     public let workingSince: Date?
     public let finishedAt: Date?
@@ -59,7 +98,9 @@ public struct CodexTask: Identifiable, Equatable, Sendable {
         projectPath: String,
         isChat: Bool,
         kind: CodexTaskKind = .regular,
+        priority: TaskPriority = .none,
         status: AttentionStatus,
+        activity: TaskActivityPreview? = nil,
         updatedAt: Date,
         workingSince: Date? = nil,
         finishedAt: Date? = nil,
@@ -72,7 +113,9 @@ public struct CodexTask: Identifiable, Equatable, Sendable {
         self.projectPath = projectPath
         self.isChat = isChat
         self.kind = kind
+        self.priority = priority
         self.status = status
+        self.activity = activity
         self.updatedAt = updatedAt
         self.workingSince = workingSince
         self.finishedAt = finishedAt

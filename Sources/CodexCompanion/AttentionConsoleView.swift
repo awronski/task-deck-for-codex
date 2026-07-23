@@ -21,6 +21,7 @@ struct AttentionConsoleView: View {
     @State private var selectedStatuses: Set<AttentionStatus> = []
     @State private var collapsedProjects: Set<String> = []
     @State private var selectedTaskID: String?
+    @State private var expandedTaskIDs: Set<String> = []
     @State private var isShowingLibrary = false
     @State private var isShowingFilters = false
     @State private var undoNotice: UndoNotice?
@@ -56,6 +57,29 @@ struct AttentionConsoleView: View {
 
     private var availableProjectIDs: Set<String> {
         Set(console.projects.map(\.key))
+    }
+
+    private var visiblePreviewTaskIDs: Set<String> {
+        Set(
+            sections
+                .filter { !collapsedProjects.contains($0.id) }
+                .flatMap(\.tasks)
+                .filter { $0.status != .inactive && $0.activity != nil }
+                .map(\.id)
+        )
+    }
+
+    private var availablePreviewTaskIDs: Set<String> {
+        Set(
+            console.allTasks
+                .filter { $0.status != .inactive && $0.activity != nil }
+                .map(\.id)
+        )
+    }
+
+    private var areAllVisiblePreviewsExpanded: Bool {
+        !visiblePreviewTaskIDs.isEmpty
+            && visiblePreviewTaskIDs.isSubset(of: expandedTaskIDs)
     }
 
     /// The complete current project order, including projects whose tasks are hidden by
@@ -134,6 +158,9 @@ struct AttentionConsoleView: View {
             selectedProjectIDs.formIntersection(availableIDs)
             pruneProjectOrder(to: availableIDs)
         }
+        .onChange(of: availablePreviewTaskIDs) { _, availableTaskIDs in
+            expandedTaskIDs.formIntersection(availableTaskIDs)
+        }
     }
 
     private var background: some View {
@@ -151,6 +178,7 @@ struct AttentionConsoleView: View {
         HStack(spacing: 8) {
             SearchField(text: $searchText)
                 .frame(maxWidth: .infinity)
+            activityExpansionButton
             filterButton(showSummary: width >= 430)
         }
         .padding(.horizontal, 14)
@@ -193,6 +221,38 @@ struct AttentionConsoleView: View {
         .popover(isPresented: $isShowingFilters, arrowEdge: .top) {
             filterPopover
         }
+    }
+
+    private var activityExpansionButton: some View {
+        Button(action: toggleAllPreviews) {
+            HStack(spacing: 6) {
+                Image(systemName: areAllVisiblePreviewsExpanded ? "chevron.up.2" : "chevron.down.2")
+                    .consoleFont(size: 9.5, weight: .semibold)
+                    .foregroundStyle(ConsoleTheme.secondaryText)
+                Text(areAllVisiblePreviewsExpanded ? "Collapse all" : "Expand all")
+                    .lineLimit(1)
+            }
+            .consoleFont(size: 12.5, weight: .medium)
+            .foregroundStyle(ConsoleTheme.primaryText)
+            .padding(.horizontal, 10)
+            .frame(height: 31)
+            .background(ConsoleTheme.raisedSurface, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(ConsoleTheme.divider))
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .disabled(visiblePreviewTaskIDs.isEmpty)
+        .opacity(visiblePreviewTaskIDs.isEmpty ? 0.5 : 1)
+        .help(
+            visiblePreviewTaskIDs.isEmpty
+                ? "No visible activity previews"
+                : (areAllVisiblePreviewsExpanded ? "Collapse all visible activity previews" : "Expand all visible activity previews")
+        )
+        .accessibilityLabel(
+            areAllVisiblePreviewsExpanded
+                ? "Collapse all visible activity previews"
+                : "Expand all visible activity previews"
+        )
     }
 
     private var filterPopover: some View {
@@ -434,6 +494,7 @@ struct AttentionConsoleView: View {
                             section: section,
                             isCollapsed: collapsedProjects.contains(section.id),
                             selectedTaskID: selectedTaskID,
+                            expandedTaskIDs: expandedTaskIDs,
                             isTaskMonitored: console.isMonitored,
                             onToggle: { toggle(section.id) },
                             onOpen: open,
@@ -444,7 +505,15 @@ struct AttentionConsoleView: View {
                             onMoveProject: moveProject,
                             onRename: { taskID, title in
                                 console.setTitle(title, for: taskID)
-                            }
+                            },
+                            onSetPriority: { taskID, priority in
+                                console.setPriority(priority, for: taskID)
+                            },
+                            noteForTask: console.note,
+                            onSetNote: { taskID, note in
+                                console.setNote(note, for: taskID)
+                            },
+                            onTogglePreview: togglePreview
                         )
                     }
                 }
@@ -543,6 +612,27 @@ struct AttentionConsoleView: View {
             collapsedProjects.remove(projectID)
         } else {
             collapsedProjects.insert(projectID)
+        }
+    }
+
+    private func togglePreview(_ taskID: String) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            selectedTaskID = taskID
+            if expandedTaskIDs.contains(taskID) {
+                expandedTaskIDs.remove(taskID)
+            } else {
+                expandedTaskIDs.insert(taskID)
+            }
+        }
+    }
+
+    private func toggleAllPreviews() {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            if areAllVisiblePreviewsExpanded {
+                expandedTaskIDs.subtract(visiblePreviewTaskIDs)
+            } else {
+                expandedTaskIDs.formUnion(visiblePreviewTaskIDs)
+            }
         }
     }
 

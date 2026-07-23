@@ -92,7 +92,12 @@ struct CodexTaskRepositoryTests {
             taskID: regularID,
             lines: [
                 event("session_meta", ["source": "vscode", "thread_source": "user"]),
-                event("event_msg", ["type": "task_started", "started_at": 1_784_648_776])
+                event("event_msg", ["type": "task_started", "started_at": 1_784_648_776]),
+                event("event_msg", [
+                    "type": "agent_message",
+                    "phase": "commentary",
+                    "message": "Reviewing the project structure."
+                ])
             ]
         )
         let automationRollout = try fixture.writeRollout(
@@ -104,7 +109,8 @@ struct CodexTaskRepositoryTests {
                     [
                         "type": "task_complete",
                         "started_at": 1_784_648_776,
-                        "completed_at": 1_784_715_636
+                        "completed_at": 1_784_715_636,
+                        "last_agent_message": "Automation finished successfully."
                     ],
                     timestamp: "2026-07-22T10:20:36.379Z"
                 )
@@ -162,7 +168,9 @@ struct CodexTaskRepositoryTests {
         #expect(defaultSnapshot.tasks.map(\.kind) == [.regular, .automation])
         #expect(defaultSnapshot.tasks.map(\.status) == [.working, .finished])
         #expect(defaultSnapshot.tasks.first?.workingSince == Date(timeIntervalSince1970: 1_784_648_776))
+        #expect(defaultSnapshot.tasks.first?.activity?.headline == "Reviewing the project structure.")
         #expect(defaultSnapshot.tasks.last?.finishedAt == automationFinishedAt)
+        #expect(defaultSnapshot.tasks.last?.activity?.headline == "Automation finished successfully.")
         #expect(defaultSnapshot.projects.map(\.name) == ["Project One", "Project Two", "Chats"])
         #expect(defaultSnapshot.projects.last?.isChat == true)
 

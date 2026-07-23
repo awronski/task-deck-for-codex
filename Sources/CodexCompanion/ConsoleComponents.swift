@@ -53,6 +53,7 @@ struct ProjectSectionView: View {
     let section: ProjectSection
     let isCollapsed: Bool
     let selectedTaskID: String?
+    let expandedTaskIDs: Set<String>
     let isTaskMonitored: (String) -> Bool
     let onToggle: () -> Void
     let onOpen: (CodexTask) -> Void
@@ -62,6 +63,10 @@ struct ProjectSectionView: View {
     let onNewTask: () -> Void
     let onMoveProject: (String, String, Bool) -> Bool
     let onRename: (String, String) -> Void
+    let onSetPriority: (String, TaskPriority) -> Void
+    let noteForTask: (String) -> String
+    let onSetNote: (String, String) -> Void
+    let onTogglePreview: (String) -> Void
 
     @State private var isDropTarget = false
 
@@ -167,12 +172,17 @@ struct ProjectSectionView: View {
                     TaskRow(
                         task: task,
                         isSelected: selectedTaskID == task.id,
+                        isPreviewExpanded: expandedTaskIDs.contains(task.id),
                         isMonitored: isTaskMonitored(task.id),
                         onOpen: { onOpen(task) },
                         onHide: { onHide(task) },
                         onEnable: { onEnable(task) },
                         onArchive: { onArchive(task) },
-                        onRename: { onRename(task.id, $0) }
+                        onRename: { onRename(task.id, $0) },
+                        onSetPriority: { onSetPriority(task.id, $0) },
+                        note: noteForTask(task.id),
+                        onSetNote: { onSetNote(task.id, $0) },
+                        onTogglePreview: { onTogglePreview(task.id) }
                     )
                 }
             }
@@ -188,62 +198,50 @@ struct ProjectSectionView: View {
 private struct TaskRow: View {
     let task: CodexTask
     let isSelected: Bool
+    let isPreviewExpanded: Bool
     let isMonitored: Bool
     let onOpen: () -> Void
     let onHide: () -> Void
     let onEnable: () -> Void
     let onArchive: () -> Void
     let onRename: (String) -> Void
+    let onSetPriority: (TaskPriority) -> Void
+    let note: String
+    let onSetNote: (String) -> Void
+    let onTogglePreview: () -> Void
 
     @State private var isHovered = false
     @State private var isEditingTitle = false
     @State private var isTitleHovered = false
+    @State private var isFlagPickerPresented = false
+    @State private var isNoteEditorPresented = false
     @State private var draftTitle = ""
+    @State private var draftNote = ""
     @FocusState private var isTitleFocused: Bool
+    @FocusState private var isNoteFocused: Bool
+
+    private var canPreview: Bool {
+        task.status != .inactive && task.activity != nil
+    }
 
     var body: some View {
-        HStack(spacing: 0) {
-            membershipButton
+        VStack(spacing: 0) {
+            rowHeader
 
-            Group {
-                if task.status == .inactive {
-                    Color.clear
-                } else {
-                    StatusIcon(status: task.status)
-                }
+            if isPreviewExpanded, let activity = task.activity {
+                ActivityPreviewPanel(task: task, activity: activity, onOpen: onOpen)
+                    .padding(.leading, 72)
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 12)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
-            .frame(width: 36)
-            .padding(.leading, 3)
-            .accessibilityHidden(task.status == .inactive)
-
-            titleControl
-                .padding(.leading, 8)
-
-            if task.status != .inactive {
-                StatusChip(status: task.status, workingSince: task.workingSince)
-                    .padding(.leading, 8)
-            }
-
-            Button(action: onArchive) {
-                Image(systemName: "archivebox")
-                    .consoleFont(size: 12, weight: .medium)
-                    .foregroundStyle(ConsoleTheme.secondaryText)
-                    .frame(width: 27, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.leading, 4)
-            .help("Archive task")
-            .accessibilityLabel("Archive \(task.title)")
         }
-        .padding(.horizontal, 12)
-        .frame(height: 52)
         .background(
             RoundedRectangle(cornerRadius: 7)
-                .fill(isSelected ? ConsoleTheme.selectedFill : (isHovered ? Color.white.opacity(0.025) : .clear))
+                .fill(rowFill)
                 .overlay(
                     RoundedRectangle(cornerRadius: 7)
-                        .stroke(isSelected ? ConsoleTheme.blue.opacity(0.17) : .clear)
+                        .stroke(rowStroke)
                 )
                 .padding(.horizontal, 8)
                 .padding(.vertical, 2)
@@ -259,33 +257,119 @@ private struct TaskRow: View {
         .accessibilityElement(children: .contain)
     }
 
-    private var titleControl: some View {
-        VStack(alignment: .leading, spacing: 1) {
+    private var rowHeader: some View {
+        HStack(spacing: 0) {
+            membershipButton
+
+            Group {
+                if task.status == .inactive {
+                    Color.clear
+                } else {
+                    StatusIcon(status: task.status)
+                }
+            }
+            .frame(width: 36)
+            .padding(.leading, 3)
+            .accessibilityHidden(task.status == .inactive)
+
+            previewDisclosureButton
+
+            titleControl
+                .padding(.leading, 8)
+                .padding(.trailing, 16)
+
             if isEditingTitle {
-                TextField("Task title", text: $draftTitle)
-                    .textFieldStyle(.plain)
-                    .consoleFont(size: 15.5, weight: .light)
-                    .foregroundStyle(ConsoleTheme.primaryText)
-                    .padding(.horizontal, 6)
-                    .frame(maxWidth: .infinity, minHeight: 28)
-                    .background(ConsoleTheme.raisedSurface, in: RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.blue.opacity(0.45)))
-                    .focused($isTitleFocused)
-                    .onSubmit(commitEditing)
-                    .onExitCommand(perform: cancelEditing)
-                    .onChange(of: isTitleFocused) { wasFocused, isFocused in
-                        if wasFocused && !isFocused && isEditingTitle {
-                            commitEditing()
-                        }
-                    }
-                    .onDisappear {
-                        if isEditingTitle {
-                            commitEditing()
-                        }
-                    }
-                    .accessibilityLabel("Edit title for \(task.title)")
+                Color.clear
+                    .frame(width: 50, height: 26)
             } else {
-                HStack(spacing: 3) {
+                editButton
+                flagPickerButton
+            }
+
+            noteButton
+
+            Button(action: onArchive) {
+                Image(systemName: "archivebox")
+                    .consoleFont(size: 13.5, weight: .medium)
+                    .foregroundStyle(ConsoleTheme.secondaryText)
+                    .frame(width: 27, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, 4)
+            .help("Archive task")
+            .accessibilityLabel("Archive \(task.title)")
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 58)
+    }
+
+    private var rowFill: Color {
+        if isSelected { return ConsoleTheme.selectedFill }
+        if isPreviewExpanded { return ConsoleTheme.color(for: task.status).opacity(0.055) }
+        if isHovered { return Color.white.opacity(0.025) }
+        return .clear
+    }
+
+    private var rowStroke: Color {
+        if isSelected { return ConsoleTheme.blue.opacity(0.17) }
+        if isPreviewExpanded { return ConsoleTheme.color(for: task.status).opacity(0.20) }
+        return .clear
+    }
+
+    private var previewDisclosureButton: some View {
+        Group {
+            if canPreview {
+                Button(action: onTogglePreview) {
+                    Image(systemName: "chevron.right")
+                        .consoleFont(size: 10, weight: .semibold)
+                        .foregroundStyle(ConsoleTheme.secondaryText)
+                        .rotationEffect(isPreviewExpanded ? .degrees(90) : .zero)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(isPreviewExpanded ? "Hide activity" : "Show activity")
+                .accessibilityLabel(
+                    "\(isPreviewExpanded ? "Hide" : "Show") activity for \(task.title)"
+                )
+                .accessibilityValue(isPreviewExpanded ? "Expanded" : "Collapsed")
+            } else {
+                Color.clear
+                    .frame(width: 28, height: 28)
+                    .accessibilityHidden(true)
+            }
+        }
+        .frame(width: 28, height: 28)
+    }
+
+    private var titleControl: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                if isEditingTitle {
+                    TextField("Task title", text: $draftTitle)
+                        .textFieldStyle(.plain)
+                        .consoleFont(size: 15.5, weight: .light)
+                        .foregroundStyle(ConsoleTheme.primaryText)
+                        .padding(.horizontal, 6)
+                        .frame(maxWidth: .infinity, minHeight: 28)
+                        .background(ConsoleTheme.raisedSurface, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.blue.opacity(0.45)))
+                        .focused($isTitleFocused)
+                        .onSubmit(commitEditing)
+                        .onExitCommand(perform: cancelEditing)
+                        .onChange(of: isTitleFocused) { wasFocused, isFocused in
+                            if wasFocused && !isFocused && isEditingTitle {
+                                commitEditing()
+                            }
+                        }
+                        .onDisappear {
+                            if isEditingTitle {
+                                commitEditing()
+                            }
+                        }
+                        .accessibilityLabel("Edit title for \(task.title)")
+                } else {
                     Button(action: onOpen) {
                         Text(task.title)
                             .lineLimit(1)
@@ -303,23 +387,176 @@ private struct TaskRow: View {
                     .help("Open in Codex")
                     .accessibilityLabel("Open \(task.title) in Codex")
                     .onHover { isTitleHovered = $0 }
-
-                    Button(action: beginEditing) {
-                        Image(systemName: "pencil")
-                            .consoleFont(size: 11, weight: .medium)
-                            .foregroundStyle(ConsoleTheme.secondaryText.opacity(isHovered ? 1 : 0.45))
-                            .frame(width: 25, height: 26)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Rename task")
-                    .accessibilityLabel("Rename \(task.title)")
                 }
             }
 
-            TaskAgeLabel(createdAt: task.createdAt)
+            HStack(spacing: 8) {
+                TaskAgeLabel(createdAt: task.createdAt)
+
+                Spacer(minLength: 8)
+
+                if task.status != .inactive {
+                    StatusChip(status: task.status, workingSince: task.workingSince)
+                        .fixedSize()
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var flagPickerButton: some View {
+        Button {
+            isFlagPickerPresented.toggle()
+        } label: {
+            flagIcon(for: task.priority)
+                .frame(width: 25, height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $isFlagPickerPresented, arrowEdge: .bottom) {
+            HStack(spacing: 4) {
+                ForEach(TaskPriority.allCases, id: \.self) { priority in
+                    Button {
+                        onSetPriority(priority)
+                        isFlagPickerPresented = false
+                    } label: {
+                        flagIcon(for: priority)
+                            .frame(width: 30, height: 30)
+                            .background(
+                                task.priority == priority
+                                    ? ConsoleTheme.blue.opacity(0.12)
+                                    : .clear,
+                                in: RoundedRectangle(cornerRadius: 6)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help(priority.title)
+                    .accessibilityLabel(priority.title)
+                }
+            }
+            .padding(8)
+        }
+        .help(task.priority.title)
+        .accessibilityLabel("Set flag for \(task.title)")
+        .accessibilityValue(task.priority.title)
+    }
+
+    private var noteButton: some View {
+        Button {
+            draftNote = note
+            isNoteEditorPresented = true
+        } label: {
+            Image(systemName: "note.text")
+                .consoleFont(size: 15, weight: .medium)
+                .foregroundStyle(
+                    note.isEmpty
+                        ? ConsoleTheme.secondaryText.opacity(isHovered ? 1 : 0.55)
+                        : ConsoleTheme.blue
+                )
+                .frame(width: 25, height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $isNoteEditorPresented, arrowEdge: .bottom) {
+            noteEditor
+        }
+        .help(note.isEmpty ? "Add note" : "Edit note")
+        .accessibilityLabel("\(noteActionTitle) note for \(task.title)")
+        .accessibilityValue(note.isEmpty ? "No note" : "Note added")
+    }
+
+    private var noteActionTitle: String {
+        note.isEmpty ? "Add" : "Edit"
+    }
+
+    private var noteEditor: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Task note")
+                    .consoleFont(size: 14.5, weight: .semibold)
+                    .foregroundStyle(ConsoleTheme.primaryText)
+                Text(task.title)
+                    .consoleFont(size: 11.5)
+                    .foregroundStyle(ConsoleTheme.secondaryText)
+                    .lineLimit(1)
+            }
+
+            TextEditor(text: $draftNote)
+                .consoleFont(size: 13)
+                .foregroundStyle(ConsoleTheme.primaryText)
+                .scrollContentBackground(.hidden)
+                .padding(6)
+                .frame(width: 292, height: 104)
+                .background(ConsoleTheme.background, in: RoundedRectangle(cornerRadius: 7))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7)
+                        .stroke(ConsoleTheme.divider)
+                )
+                .overlay(alignment: .topLeading) {
+                    if draftNote.isEmpty {
+                        Text("What should you remember before continuing?")
+                            .consoleFont(size: 13)
+                            .foregroundStyle(ConsoleTheme.secondaryText)
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 14)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .focused($isNoteFocused)
+                .accessibilityLabel("Note for \(task.title)")
+                .onChange(of: draftNote) { _, newValue in
+                    if newValue.count > 2_000 {
+                        draftNote = String(newValue.prefix(2_000))
+                    } else {
+                        onSetNote(newValue)
+                    }
+                }
+
+            HStack {
+                Button("Clear") {
+                    draftNote = ""
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(draftNote.isEmpty ? ConsoleTheme.secondaryText : ConsoleTheme.red)
+                .disabled(draftNote.isEmpty)
+
+                Spacer()
+
+                Button("Done") {
+                    isNoteEditorPresented = false
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+        }
+        .padding(14)
+        .frame(width: 320)
+        .background(ConsoleTheme.surface)
+        .onAppear {
+            draftNote = note
+            Task { @MainActor in
+                isNoteFocused = true
+            }
+        }
+    }
+
+    private var editButton: some View {
+        Button(action: beginEditing) {
+            Image(systemName: "pencil")
+                .consoleFont(size: 13, weight: .medium)
+                .foregroundStyle(ConsoleTheme.secondaryText.opacity(isHovered ? 1 : 0.45))
+                .frame(width: 25, height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Rename task")
+        .accessibilityLabel("Rename \(task.title)")
+    }
+
+    private func flagIcon(for priority: TaskPriority) -> some View {
+        Image(systemName: priority == .none ? "flag" : "flag.fill")
+            .consoleFont(size: 13.5, weight: .medium)
+            .foregroundStyle(priority.color)
     }
 
     private var membershipButton: some View {
@@ -359,6 +596,204 @@ private struct TaskRow: View {
         draftTitle = task.title
         isEditingTitle = false
         isTitleFocused = false
+    }
+}
+
+private struct ActivityPreviewPanel: View {
+    let task: CodexTask
+    let activity: TaskActivityPreview
+    let onOpen: () -> Void
+
+    private var color: Color {
+        ConsoleTheme.color(for: task.status)
+    }
+
+    private var heading: String {
+        switch task.status {
+        case .working: "Current activity"
+        case .waitingForInput: "Input needed"
+        case .waitingForPermission: "Permission request"
+        case .finished: "Completed"
+        case .error: "Error"
+        case .inactive: "Activity"
+        }
+    }
+
+    private var actionTitle: String {
+        switch task.status {
+        case .waitingForInput: "Reply in Codex"
+        case .waitingForPermission: "Review in Codex"
+        case .working, .finished, .error, .inactive: "Open in Codex"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle()
+                .fill(ConsoleTheme.divider)
+                .frame(height: 1)
+
+            Text(heading.uppercased())
+                .consoleFont(size: 10.5, weight: .semibold)
+                .foregroundStyle(color)
+                .tracking(0.35)
+                .padding(.top, 14)
+                .accessibilityAddTraits(.isHeader)
+
+            HStack(alignment: .top, spacing: 10) {
+                statusGraphic
+                    .frame(width: 18, height: 18)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(activity.headline)
+                        .consoleFont(size: 13.5)
+                        .foregroundStyle(ConsoleTheme.primaryText)
+                        .lineLimit(task.status == .finished ? 3 : 2)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if let detail = activity.detail, !detail.isEmpty {
+                        Text(detail)
+                            .consoleFont(size: 11.5)
+                            .foregroundStyle(ConsoleTheme.secondaryText)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    timingLabel
+                }
+            }
+            .padding(.top, 8)
+
+            if !activity.recentEvents.isEmpty {
+                Rectangle()
+                    .fill(ConsoleTheme.divider)
+                    .frame(height: 1)
+                    .padding(.top, 12)
+                    .padding(.bottom, 10)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(activity.recentEvents.enumerated()), id: \.offset) { _, event in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Image(systemName: eventSymbol)
+                                .consoleFont(size: 8, weight: .semibold)
+                                .foregroundStyle(color)
+                                .frame(width: 12)
+                            Text(event.title)
+                                .consoleFont(size: 11.5)
+                                .foregroundStyle(ConsoleTheme.primaryText.opacity(0.88))
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+
+            HStack {
+                Spacer(minLength: 0)
+                Button(action: onOpen) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.up.forward.app")
+                            .consoleFont(size: 10.5, weight: .semibold)
+                        Text(actionTitle)
+                    }
+                    .consoleFont(size: 11.5, weight: .medium)
+                    .foregroundStyle(color)
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(color.opacity(0.24))
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("\(actionTitle) — activity is read-only in Task Deck")
+                .accessibilityLabel("\(actionTitle) for \(task.title); activity is read-only in Task Deck")
+            }
+            .padding(.top, 14)
+        }
+    }
+
+    @ViewBuilder
+    private var statusGraphic: some View {
+        if task.status == .working {
+            ProgressView()
+                .controlSize(.small)
+                .tint(color)
+        } else {
+            Image(systemName: statusSymbol)
+                .consoleFont(size: 13, weight: .semibold)
+                .foregroundStyle(color)
+        }
+    }
+
+    @ViewBuilder
+    private var timingLabel: some View {
+        switch task.status {
+        case .working:
+            if let workingSince = task.workingSince {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text("Active for \(TaskTimer.compactElapsed(from: workingSince, to: context.date))")
+                }
+                .consoleFont(size: 10.5)
+                .foregroundStyle(ConsoleTheme.secondaryText)
+            }
+        case .waitingForInput:
+            Text("Reply in Codex to continue.")
+                .consoleFont(size: 10.5)
+                .foregroundStyle(ConsoleTheme.secondaryText)
+        case .waitingForPermission:
+            Text("Review this request in Codex.")
+                .consoleFont(size: 10.5)
+                .foregroundStyle(ConsoleTheme.secondaryText)
+        case .finished:
+            if let finishedAt = task.finishedAt {
+                TimelineView(
+                    .periodic(
+                        from: .now,
+                        by: TaskAge.refreshInterval(from: finishedAt, to: .now)
+                    )
+                ) { context in
+                    Text("Finished \(TaskAge.relativeDescription(from: finishedAt, to: context.date))")
+                }
+                .consoleFont(size: 10.5)
+                .foregroundStyle(ConsoleTheme.secondaryText)
+            }
+        case .error:
+            Text("Open Codex for full details.")
+                .consoleFont(size: 10.5)
+                .foregroundStyle(ConsoleTheme.secondaryText)
+        case .inactive:
+            EmptyView()
+        }
+    }
+
+    private var statusSymbol: String {
+        switch task.status {
+        case .waitingForInput, .waitingForPermission: "exclamationmark.circle.fill"
+        case .finished: "checkmark.circle.fill"
+        case .error: "xmark.circle.fill"
+        case .working: "circle"
+        case .inactive: "circle"
+        }
+    }
+
+    private var eventSymbol: String {
+        switch task.status {
+        case .finished: "checkmark.circle"
+        case .error: "exclamationmark.circle"
+        case .working, .waitingForInput, .waitingForPermission, .inactive: "circle.fill"
+        }
+    }
+}
+
+private extension TaskPriority {
+    var color: Color {
+        switch self {
+        case .none: ConsoleTheme.secondaryText
+        case .yellow: .yellow
+        case .orange: .orange
+        case .red: ConsoleTheme.red
+        }
     }
 }
 

@@ -23,6 +23,7 @@ struct AttentionConsoleTests {
             archiver: TestTaskArchiver(),
             storage: storage,
             titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: TestProjectOrderStorage()
         )
 
@@ -59,6 +60,7 @@ struct AttentionConsoleTests {
             archiver: TestTaskArchiver(),
             storage: visibility,
             titleStorage: titles,
+            priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: projectOrder
         )
         await console.refresh()
@@ -80,6 +82,7 @@ struct AttentionConsoleTests {
             archiver: TestTaskArchiver(),
             storage: visibility,
             titleStorage: titles,
+            priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: projectOrder
         )
         await relaunched.refresh()
@@ -89,6 +92,127 @@ struct AttentionConsoleTests {
         #expect(relaunched.allTasks.first?.title == "Generated title")
         #expect(TaskGrouping.sections(from: relaunched.allTasks, matching: "Generated").count == 1)
         #expect(titles.load().isEmpty)
+    }
+
+    @Test
+    func taskFlagsPersistAndNoFlagRemovesTheOverride() async {
+        let task = codexTask(
+            "task",
+            title: "Prioritized task",
+            status: .inactive
+        )
+        let priorities = TestTaskPriorityStorage()
+        let loader = StaticTaskLoader(tasks: [task])
+        let console = AttentionConsole(
+            loader: loader,
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: priorities,
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await console.refresh()
+
+        let priorityChangeWasObserved = Mutex(false)
+        withObservationTracking {
+            _ = console.allTasks.first?.priority
+        } onChange: {
+            priorityChangeWasObserved.withLock { $0 = true }
+        }
+
+        console.setPriority(.red, for: task.id)
+        #expect(console.allTasks.first?.priority == .red)
+        #expect(priorityChangeWasObserved.withLock { $0 })
+
+        let relaunched = AttentionConsole(
+            loader: loader,
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: priorities,
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await relaunched.refresh()
+
+        #expect(relaunched.allTasks.first?.priority == .red)
+
+        relaunched.setPriority(.none, for: task.id)
+        #expect(relaunched.allTasks.first?.priority == TaskPriority.none)
+        #expect(priorities.load().isEmpty)
+    }
+
+    @Test
+    func taskNotesPersistAndWhitespaceClearsTheNote() async {
+        let task = codexTask(
+            "task",
+            title: "Waiting task",
+            status: .inactive
+        )
+        let notes = TestTaskNoteStorage()
+        let loader = StaticTaskLoader(tasks: [task])
+        let console = AttentionConsole(
+            loader: loader,
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            noteStorage: notes,
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await console.refresh()
+
+        let noteChangeWasObserved = Mutex(false)
+        withObservationTracking {
+            _ = console.note(for: task.id)
+        } onChange: {
+            noteChangeWasObserved.withLock { $0 = true }
+        }
+
+        console.setNote("Waiting for the production update.", for: task.id)
+        #expect(console.note(for: task.id) == "Waiting for the production update.")
+        #expect(noteChangeWasObserved.withLock { $0 })
+
+        let relaunched = AttentionConsole(
+            loader: loader,
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            noteStorage: notes,
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await relaunched.refresh()
+
+        #expect(relaunched.note(for: task.id) == "Waiting for the production update.")
+
+        relaunched.setNote("  \n ", for: task.id)
+        #expect(relaunched.note(for: task.id).isEmpty)
+        #expect(notes.load().isEmpty)
+    }
+
+    @Test
+    func displayPreferencesPreserveActiveTaskActivity() async {
+        let activity = TaskActivityPreview(headline: "Running the test suite.")
+        let task = codexTask(
+            "task",
+            title: "Generated title",
+            status: .working,
+            activity: activity
+        )
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [task]),
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await console.refresh()
+
+        console.setTitle("Local title", for: task.id)
+        console.setPriority(.orange, for: task.id)
+
+        #expect(console.allTasks.first?.activity == activity)
     }
 
     @Test
@@ -104,6 +228,7 @@ struct AttentionConsoleTests {
             archiver: archiver,
             storage: TestVisibilityStorage(),
             titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: TestProjectOrderStorage()
         )
         await console.refresh()
@@ -124,6 +249,7 @@ struct AttentionConsoleTests {
             archiver: TestTaskArchiver(),
             storage: TestVisibilityStorage(),
             titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: TestProjectOrderStorage()
         )
 
@@ -149,6 +275,7 @@ struct AttentionConsoleTests {
             archiver: TestTaskArchiver(),
             storage: visibility,
             titleStorage: titles,
+            priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: projectOrder
         )
         await console.refresh()
@@ -162,6 +289,7 @@ struct AttentionConsoleTests {
             archiver: TestTaskArchiver(),
             storage: visibility,
             titleStorage: titles,
+            priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: projectOrder
         )
         await relaunched.refresh()
@@ -184,6 +312,7 @@ struct AttentionConsoleTests {
             archiver: TestTaskArchiver(),
             storage: TestVisibilityStorage(),
             titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: TestProjectOrderStorage()
         )
         await console.refresh()
@@ -215,6 +344,7 @@ struct AttentionConsoleTests {
                 ledger: VisibilityLedger(isBootstrapped: true)
             ),
             titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: TestProjectOrderStorage()
         )
 
@@ -249,6 +379,7 @@ struct AttentionConsoleTests {
             archiver: TestTaskArchiver(),
             storage: TestVisibilityStorage(),
             titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: TestProjectOrderStorage()
         )
 
@@ -283,6 +414,7 @@ struct AttentionConsoleTests {
             archiver: TestTaskArchiver(),
             storage: TestVisibilityStorage(ledger: VisibilityLedger(isBootstrapped: true)),
             titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: TestProjectOrderStorage()
         )
         console.setIncludedTaskKinds(CodexTaskKind.defaultVisible.union([.agent]))
@@ -323,6 +455,7 @@ struct AttentionConsoleTests {
             archiver: TestTaskArchiver(),
             storage: visibility,
             titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: TestProjectOrderStorage(),
             launchedAt: launchedAt
         )
@@ -340,6 +473,7 @@ struct AttentionConsoleTests {
             archiver: TestTaskArchiver(),
             storage: visibility,
             titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: TestProjectOrderStorage(),
             launchedAt: launchedAt.addingTimeInterval(2)
         )
@@ -368,6 +502,7 @@ struct AttentionConsoleTests {
                 )
             ),
             titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: TestProjectOrderStorage(),
             launchedAt: launchedAt
         )
@@ -393,6 +528,7 @@ struct AttentionConsoleTests {
             archiver: TestTaskArchiver(),
             storage: TestVisibilityStorage(ledger: VisibilityLedger(isBootstrapped: true)),
             titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: TestProjectOrderStorage(),
             launchedAt: launchedAt
         )
@@ -423,6 +559,7 @@ struct AttentionConsoleTests {
             archiver: TestTaskArchiver(),
             storage: TestVisibilityStorage(ledger: VisibilityLedger(isBootstrapped: true)),
             titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: TestProjectOrderStorage(),
             launchedAt: launchedAt
         )
@@ -492,6 +629,7 @@ private func codexTask(
     projectPath: String = "/code/project",
     kind: CodexTaskKind = .regular,
     status: AttentionStatus,
+    activity: TaskActivityPreview? = nil,
     updatedAt: Date = .now,
     workingSince: Date? = nil,
     finishedAt: Date? = nil
@@ -505,6 +643,7 @@ private func codexTask(
         isChat: false,
         kind: kind,
         status: status,
+        activity: activity,
         updatedAt: updatedAt,
         workingSince: workingSince,
         finishedAt: finishedAt
@@ -547,6 +686,30 @@ private final class TestTaskTitleStorage: TaskTitleStoring {
 
     func load() -> [String: String] { titles }
     func save(_ titles: [String: String]) { self.titles = titles }
+}
+
+@MainActor
+private final class TestTaskPriorityStorage: TaskPriorityStoring {
+    private var priorities: [String: TaskPriority]
+
+    init(priorities: [String: TaskPriority] = [:]) {
+        self.priorities = priorities
+    }
+
+    func load() -> [String: TaskPriority] { priorities }
+    func save(_ priorities: [String: TaskPriority]) { self.priorities = priorities }
+}
+
+@MainActor
+private final class TestTaskNoteStorage: TaskNoteStoring {
+    private var notes: [String: String]
+
+    init(notes: [String: String] = [:]) {
+        self.notes = notes
+    }
+
+    func load() -> [String: String] { notes }
+    func save(_ notes: [String: String]) { self.notes = notes }
 }
 
 @MainActor
