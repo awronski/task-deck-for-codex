@@ -25,19 +25,15 @@ The ready-made app is Developer ID signed and Apple notarized. Open the DMG and 
 </p>
 
 <p align="center">
-  <sub><strong>Follow live activity</strong> without opening every task · <strong>Add reminders</strong> so important work returns at the right time</sub>
+  <sub><strong>Monitor every task</strong> from one view · <strong>Add reminders</strong> so important work returns at the right time</sub>
 </p>
 
 <details>
-<summary><strong>More views</strong> — task overview and focused filtering</summary>
+<summary><strong>See expanded live activity</strong></summary>
 <br>
 <p align="center">
   <a href="docs/images/task-deck-attention-states-expanded.png">
-    <img src="docs/images/task-deck-attention-states-expanded.png" alt="Expanded live Codex task activity in Task Deck" width="46%">
-  </a>
-  &nbsp;
-  <a href="docs/images/task-deck-attention-states-filters.png">
-    <img src="docs/images/task-deck-attention-states-filters.png" alt="Filtering Codex tasks by type, project, and status" width="46%">
+    <img src="docs/images/task-deck-attention-states-expanded.png" alt="Expanded live Codex task activity in Task Deck" width="60%">
   </a>
 </p>
 </details>
