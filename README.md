@@ -15,8 +15,8 @@ The ready-made app is Developer ID signed and Apple notarized. Open the DMG and 
 ## See your Codex work at a glance
 
 <p align="center">
-  <a href="docs/images/task-deck-attention-states-expanded.png">
-    <img src="docs/images/task-deck-attention-states-expanded.png" alt="Live Codex task activity in Task Deck" width="46%">
+  <a href="docs/images/task-deck-attention-states.png">
+    <img src="docs/images/task-deck-attention-states.png" alt="Task Deck overview with live Codex task states" width="46%">
   </a>
   &nbsp;
   <a href="docs/images/task-deck-attention-states-reminder.png">
@@ -32,8 +32,8 @@ The ready-made app is Developer ID signed and Apple notarized. Open the DMG and 
 <summary><strong>More views</strong> — task overview and focused filtering</summary>
 <br>
 <p align="center">
-  <a href="docs/images/task-deck-attention-states.png">
-    <img src="docs/images/task-deck-attention-states.png" alt="Task Deck overview with live Codex task states" width="46%">
+  <a href="docs/images/task-deck-attention-states-expanded.png">
+    <img src="docs/images/task-deck-attention-states-expanded.png" alt="Expanded live Codex task activity in Task Deck" width="46%">
   </a>
   &nbsp;
   <a href="docs/images/task-deck-attention-states-filters.png">
