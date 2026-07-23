@@ -16,25 +16,28 @@ The ready-made app is Developer ID signed and Apple notarized. Open the DMG and 
 
 <p align="center">
   <a href="docs/images/task-deck-attention-states.png">
-    <img src="docs/images/task-deck-attention-states.png" alt="Task Deck overview with live Codex task states" width="46%">
-  </a>
-  &nbsp;
-  <a href="docs/images/task-deck-attention-states-reminder.png">
-    <img src="docs/images/task-deck-attention-states-reminder.png" alt="Setting a task reminder in Task Deck" width="46%">
+    <img src="docs/images/task-deck-attention-states.png" alt="Task Deck overview with live Codex task states" width="72%">
   </a>
 </p>
 
 <p align="center">
-  <sub><strong>Monitor every task</strong> from one view · <strong>Add reminders</strong> so important work returns at the right time</sub>
+  <sub><strong>Monitor every task</strong> from one clear view and keep the work that matters in focus.</sub>
 </p>
 
 <details>
-<summary><strong>See expanded live activity</strong></summary>
+<summary><strong>See reminders and expanded live activity</strong></summary>
 <br>
 <p align="center">
-  <a href="docs/images/task-deck-attention-states-expanded.png">
-    <img src="docs/images/task-deck-attention-states-expanded.png" alt="Expanded live Codex task activity in Task Deck" width="60%">
+  <a href="docs/images/task-deck-attention-states-reminder.png">
+    <img src="docs/images/task-deck-attention-states-reminder.png" alt="Setting a task reminder in Task Deck" width="46%">
   </a>
+  &nbsp;
+  <a href="docs/images/task-deck-attention-states-expanded.png">
+    <img src="docs/images/task-deck-attention-states-expanded.png" alt="Expanded live Codex task activity in Task Deck" width="46%">
+  </a>
+</p>
+<p align="center">
+  <sub><strong>Set reminders</strong> for work to revisit · <strong>Expand activity</strong> to see what Codex is doing now</sub>
 </p>
 </details>
 
