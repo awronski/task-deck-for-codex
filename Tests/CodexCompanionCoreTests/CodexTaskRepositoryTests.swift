@@ -190,6 +190,35 @@ struct CodexTaskRepositoryTests {
     }
 
     @Test
+    func usesCodexSessionIndexTitleInsteadOfRawDatabaseTitle() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let taskID = UUID().uuidString
+        try fixture.writeCatalog(
+            projects: [(id: "cli", name: "cli", path: "/Users/test/code/cli")],
+            assignments: [taskID: "cli"]
+        )
+        try fixture.writeDatabase(rows: [
+            .init(
+                id: taskID,
+                title: "<codex_delegation><source_thread_id>parent</source_thread_id>",
+                cwd: "/Users/test/code/cli",
+                rolloutPath: nil
+            )
+        ])
+        try fixture.writeSessionIndex(entries: [
+            (id: taskID, title: "Trace check-aniadb-replica SSH job")
+        ])
+
+        let snapshot = try await fixture.repository().loadSnapshot(
+            including: CodexTaskKind.defaultVisible
+        )
+
+        #expect(snapshot.tasks.first?.title == "Trace check-aniadb-replica SSH job")
+    }
+
+    @Test
     func loadsRegularTaskFromItsCatalogWorkspaceWithoutAnExplicitAssignment() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.remove() }
@@ -407,6 +436,18 @@ private struct RepositoryFixture {
         }
 
         try executeSQL(statements.joined(separator: ";"))
+    }
+
+    func writeSessionIndex(entries: [(id: String, title: String)]) throws {
+        let lines = try entries.map { entry in
+            let data = try JSONSerialization.data(withJSONObject: [
+                "id": entry.id,
+                "thread_name": entry.title
+            ])
+            return String(decoding: data, as: UTF8.self)
+        }
+        try Data((lines.joined(separator: "\n") + "\n").utf8)
+            .write(to: root.appendingPathComponent("session_index.jsonl"))
     }
 
     func convertDatabaseToWALWithoutSidecars() throws {

@@ -66,6 +66,16 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
         }
     }
 
+    private struct SessionIndexEntry: Decodable {
+        let id: String
+        let threadName: String
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case threadName = "thread_name"
+        }
+    }
+
     private struct RolloutCursor: Sendable {
         var offset: UInt64 = 0
         var pending = Data()
@@ -78,6 +88,7 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
     private let codexHomeURL: URL
     private let codexExecutableURL: URL?
     private let sessionsURL: URL
+    private let sessionIndexURL: URL
     private let projectCatalogURL: URL
     private let homeDirectory: String
     private var cursors: [String: RolloutCursor] = [:]
@@ -97,6 +108,7 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
         self.codexExecutableURL = codexExecutableURL
             ?? Self.findCodexExecutable(homeDirectory: homeDirectory)
         self.sessionsURL = resolvedCodexHome.appendingPathComponent("sessions", isDirectory: true).standardizedFileURL
+        self.sessionIndexURL = resolvedCodexHome.appendingPathComponent("session_index.jsonl")
         self.projectCatalogURL = projectCatalogURL
             ?? resolvedCodexHome.appendingPathComponent(".codex-global-state.json")
         self.homeDirectory = homeDirectory
@@ -105,6 +117,7 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
     public func loadSnapshot(including kinds: Set<CodexTaskKind>) async throws -> CodexTaskSnapshot {
         let rows = try queryThreadRows(including: kinds)
         let projectCatalog = try loadProjectCatalog()
+        let sessionTitles = loadSessionTitles()
         var tasks: [CodexTask] = []
         tasks.reserveCapacity(rows.count)
 
@@ -149,7 +162,10 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
             tasks.append(
                 CodexTask(
                     id: row.id,
-                    title: TaskText.cleanTitle(row.title ?? "", fallbackID: row.id),
+                    title: TaskText.cleanTitle(
+                        sessionTitles[row.id] ?? row.title ?? "",
+                        fallbackID: row.id
+                    ),
                     projectKey: resolvedProject.key,
                     projectName: resolvedProject.name,
                     projectPath: resolvedProject.path,
@@ -169,6 +185,20 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
             tasks: tasks,
             projects: projectCatalog.identities(homeDirectory: homeDirectory)
         )
+    }
+
+    private func loadSessionTitles() -> [String: String] {
+        guard let data = try? Data(contentsOf: sessionIndexURL) else { return [:] }
+
+        let decoder = JSONDecoder()
+        var titles: [String: String] = [:]
+        for line in data.split(separator: 0x0A) {
+            guard let entry = try? decoder.decode(SessionIndexEntry.self, from: line),
+                  !entry.threadName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { continue }
+            titles[entry.id] = entry.threadName
+        }
+        return titles
     }
 
     public func setArchived(_ archived: Bool, taskID: String) async throws {
