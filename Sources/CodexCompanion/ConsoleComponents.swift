@@ -817,7 +817,7 @@ private struct TaskRow: View {
 
             Rectangle()
                 .fill(ConsoleTheme.divider)
-                .frame(width: 1, height: 66)
+                .frame(width: 1, height: 76)
 
             Group {
                 if task.status == .inactive {
@@ -859,15 +859,25 @@ private struct TaskRow: View {
                         noteButton
                         archiveButton
                     }
+                    .padding(.horizontal, 7)
+                    .frame(height: 36)
+                    .background(
+                        ConsoleTheme.surface,
+                        in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(Color.white.opacity(0.14))
+                    )
                     .fixedSize(horizontal: true, vertical: false)
                 }
-                .frame(height: 28)
+                .frame(height: 36)
             }
             .padding(.leading, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 12)
-        .frame(height: 66)
+        .frame(height: 76)
     }
 
     private var rowFill: Color {
