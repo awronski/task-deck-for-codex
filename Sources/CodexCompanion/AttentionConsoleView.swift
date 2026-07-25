@@ -524,7 +524,7 @@ struct AttentionConsoleView: View {
             emptyState
         } else {
             ScrollView {
-                LazyVStack(spacing: 0) {
+                LazyVStack(spacing: 16) {
                     ForEach(sections) { section in
                         ProjectSectionView(
                             section: section,
@@ -557,7 +557,8 @@ struct AttentionConsoleView: View {
                         )
                     }
                 }
-                .padding(.vertical, 8)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
             }
             .scrollIndicators(.visible)
         }

@@ -631,7 +631,7 @@ struct ProjectSectionView: View {
                             .frame(width: 22)
 
                         Text(section.name)
-                            .consoleFont(size: 15.5, weight: .medium)
+                            .consoleFont(size: 17.5, weight: .medium)
                             .foregroundStyle(ConsoleTheme.primaryText)
                             .lineLimit(1)
                             .truncationMode(.tail)
@@ -708,7 +708,11 @@ struct ProjectSectionView: View {
                 isDropTarget = isTargeted
             }
 
-            if !isCollapsed {
+            if !isCollapsed, !section.tasks.isEmpty {
+                Rectangle()
+                    .fill(ConsoleTheme.divider)
+                    .frame(height: 1)
+
                 ForEach(section.tasks) { task in
                     TaskRow(
                         task: task,
@@ -727,14 +731,25 @@ struct ProjectSectionView: View {
                         onRemoveReminder: { onRemoveReminder(task.id) },
                         onTogglePreview: { onTogglePreview(task.id) }
                     )
+
+                    if task.id != section.tasks.last?.id {
+                        Rectangle()
+                            .fill(ConsoleTheme.divider)
+                            .frame(height: 1)
+                            .padding(.leading, 62)
+                            .padding(.trailing, 16)
+                    }
                 }
             }
-
-            Rectangle()
-                .fill(ConsoleTheme.divider)
-                .frame(height: 1)
-                .padding(.leading, 16)
         }
+        .background(
+            ConsoleTheme.raisedSurface,
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.white.opacity(0.12))
+        )
     }
 }
 
@@ -792,13 +807,6 @@ private struct TaskRow: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 2)
         )
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(ConsoleTheme.divider)
-                .frame(height: 1)
-                .padding(.leading, 62)
-                .padding(.trailing, 16)
-        }
         .onHover { isHovered = $0 }
         .accessibilityElement(children: .contain)
     }
@@ -806,6 +814,10 @@ private struct TaskRow: View {
     private var rowHeader: some View {
         HStack(spacing: 0) {
             membershipButton
+
+            Rectangle()
+                .fill(ConsoleTheme.divider)
+                .frame(width: 1, height: 66)
 
             Group {
                 if task.status == .inactive {
@@ -818,36 +830,44 @@ private struct TaskRow: View {
             .padding(.leading, 3)
             .accessibilityHidden(task.status == .inactive)
 
-            previewDisclosureButton
+            VStack(alignment: .leading, spacing: 2) {
+                titleControl
+                    .frame(height: 28)
+                    .padding(.trailing, 16)
 
-            titleControl
-                .padding(.leading, 8)
-                .padding(.trailing, 16)
+                HStack(spacing: 8) {
+                    TaskAgeLabel(createdAt: task.createdAt)
 
-            if isEditingTitle {
-                Color.clear.frame(width: 75, height: 26)
-            } else {
-                reminderButton
-                editButton
-                flagPickerButton
+                    if task.status != .inactive {
+                        StatusChip(status: task.status, workingSince: task.workingSince)
+                            .fixedSize()
+                    }
+
+                    Spacer(minLength: 8)
+
+                    HStack(spacing: 4) {
+                        previewDisclosureButton
+
+                        if isEditingTitle {
+                            Color.clear.frame(width: 75, height: 26)
+                        } else {
+                            reminderButton
+                            editButton
+                            flagPickerButton
+                        }
+
+                        noteButton
+                        archiveButton
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                }
+                .frame(height: 28)
             }
-
-            noteButton
-
-            Button(action: onArchive) {
-                Image(systemName: "archivebox")
-                    .consoleFont(size: 13.5, weight: .medium)
-                    .foregroundStyle(ConsoleTheme.secondaryText)
-                    .frame(width: 27, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.leading, 4)
-            .help("Archive task")
-            .accessibilityLabel("Archive \(task.title)")
+            .padding(.leading, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 12)
-        .frame(height: 58)
+        .frame(height: 66)
     }
 
     private var rowFill: Color {
@@ -888,64 +908,65 @@ private struct TaskRow: View {
     }
 
     private var titleControl: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 8) {
-                if isEditingTitle {
-                    TextField("Task title", text: $draftTitle)
-                        .textFieldStyle(.plain)
-                        .consoleFont(size: 15.5, weight: .light)
-                        .foregroundStyle(ConsoleTheme.primaryText)
-                        .padding(.horizontal, 6)
-                        .frame(maxWidth: .infinity, minHeight: 28)
-                        .background(ConsoleTheme.raisedSurface, in: RoundedRectangle(cornerRadius: 6))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.blue.opacity(0.45)))
-                        .focused($isTitleFocused)
-                        .onSubmit(commitEditing)
-                        .onExitCommand(perform: cancelEditing)
-                        .onChange(of: isTitleFocused) { wasFocused, isFocused in
-                            if wasFocused && !isFocused && isEditingTitle {
-                                commitEditing()
-                            }
+        Group {
+            if isEditingTitle {
+                TextField("Task title", text: $draftTitle)
+                    .textFieldStyle(.plain)
+                    .consoleFont(size: 15.5, weight: .light)
+                    .foregroundStyle(ConsoleTheme.primaryText)
+                    .padding(.horizontal, 6)
+                    .frame(maxWidth: .infinity, minHeight: 28)
+                    .background(ConsoleTheme.raisedSurface, in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.blue.opacity(0.45)))
+                    .focused($isTitleFocused)
+                    .onSubmit(commitEditing)
+                    .onExitCommand(perform: cancelEditing)
+                    .onChange(of: isTitleFocused) { wasFocused, isFocused in
+                        if wasFocused && !isFocused && isEditingTitle {
+                            commitEditing()
                         }
-                        .onDisappear {
-                            if isEditingTitle {
-                                commitEditing()
-                            }
-                        }
-                        .accessibilityLabel("Edit title for \(task.title)")
-                } else {
-                    Button(action: onOpen) {
-                        Text(task.title)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .consoleFont(size: 15.5, weight: .light)
-                            .foregroundStyle(
-                                isTitleHovered
-                                    ? ConsoleTheme.blue
-                                    : (isMonitored ? ConsoleTheme.primaryText : ConsoleTheme.secondaryText)
-                            )
-                            .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .help("Open in Codex")
-                    .accessibilityLabel("Open \(task.title) in Codex")
-                    .onHover { isTitleHovered = $0 }
+                    .onDisappear {
+                        if isEditingTitle {
+                            commitEditing()
+                        }
+                    }
+                    .accessibilityLabel("Edit title for \(task.title)")
+            } else {
+                Button(action: onOpen) {
+                    Text(task.title)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .consoleFont(size: 15.5, weight: .light)
+                        .foregroundStyle(
+                            isTitleHovered
+                                ? ConsoleTheme.blue
+                                : (isMonitored ? ConsoleTheme.primaryText : ConsoleTheme.secondaryText)
+                        )
+                        .contentShape(Rectangle())
                 }
-            }
-
-            HStack(spacing: 8) {
-                TaskAgeLabel(createdAt: task.createdAt)
-
-                Spacer(minLength: 8)
-
-                if task.status != .inactive {
-                    StatusChip(status: task.status, workingSince: task.workingSince)
-                        .fixedSize()
-                }
+                .buttonStyle(.plain)
+                .help("Open in Codex")
+                .accessibilityLabel("Open \(task.title) in Codex")
+                .onHover { isTitleHovered = $0 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var archiveButton: some View {
+        Button(action: onArchive) {
+            Image(systemName: "archivebox")
+                .consoleFont(size: 13.5, weight: .medium)
+                .foregroundStyle(ConsoleTheme.secondaryText)
+                .frame(width: 27, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, 4)
+        .help("Archive task")
+        .accessibilityLabel("Archive \(task.title)")
     }
 
     private var flagPickerButton: some View {

@@ -47,10 +47,10 @@ struct TaskDeckForCodexApp: App {
                         baseSize: fontSize
                     )
                 )
-                .frame(minWidth: 390, minHeight: 380)
+                .frame(minWidth: 595, minHeight: 380)
                 .preferredColorScheme(.dark)
         }
-        .defaultSize(width: 447, height: 879)
+        .defaultSize(width: 595, height: 879)
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) {}

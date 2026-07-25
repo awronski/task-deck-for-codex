@@ -15,14 +15,14 @@ private final class ConfiguringView: NSView {
         window.toolbarStyle = .unified
         window.isMovableByWindowBackground = false
         window.backgroundColor = NSColor(red: 0.075, green: 0.086, blue: 0.094, alpha: 1)
-        window.minSize = NSSize(width: 390, height: 380)
+        window.minSize = NSSize(width: 595, height: 380)
         window.setFrameAutosaveName("TaskDeckForCodex.mainWindow")
 
         let defaultsKey = "task-deck-for-codex.did-set-initial-window-size.v1"
         if !UserDefaults.standard.bool(forKey: defaultsKey) {
             Task { @MainActor [weak window] in
                 guard let window else { return }
-                window.setContentSize(NSSize(width: 447, height: 879))
+                window.setContentSize(NSSize(width: 595, height: 879))
                 window.center()
                 UserDefaults.standard.set(true, forKey: defaultsKey)
             }
