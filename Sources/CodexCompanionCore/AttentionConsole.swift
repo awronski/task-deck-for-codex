@@ -377,6 +377,8 @@ public final class AttentionConsole {
             kind: task.kind,
             priority: priority,
             status: status,
+            modelName: task.modelName,
+            thinkingEffort: task.thinkingEffort,
             activity: status == .inactive ? nil : task.activity,
             updatedAt: task.updatedAt,
             workingSince: task.workingSince,

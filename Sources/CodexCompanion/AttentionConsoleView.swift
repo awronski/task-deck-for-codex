@@ -5,6 +5,8 @@ import SwiftUI
 struct AttentionConsoleView: View {
     let console: AttentionConsole
 
+    @AppStorage("automaticallySortProjects") private var automaticallySortProjects = false
+
     private enum UndoOperation: Equatable {
         case consoleRemoval
         case archive
@@ -33,16 +35,16 @@ struct AttentionConsoleView: View {
     }
 
     private var sections: [ProjectSection] {
-        ProjectOrdering.applying(
-            console.projectOrderIDs,
-            to: TaskGrouping.sections(
-                from: sourceTasks,
-                includingEmptyProjects: console.projects.filter(\.isChat),
-                matching: searchText,
-                projectIDs: selectedProjectIDs,
-                statuses: selectedStatuses
-            )
+        let groupedSections = TaskGrouping.sections(
+            from: sourceTasks,
+            includingEmptyProjects: console.projects.filter(\.isChat),
+            matching: searchText,
+            projectIDs: selectedProjectIDs,
+            statuses: selectedStatuses
         )
+        return automaticallySortProjects
+            ? ProjectOrdering.sortingAutomatically(groupedSections)
+            : ProjectOrdering.applying(console.projectOrderIDs, to: groupedSections)
     }
 
     private var projectOptions: [ProjectIdentity] {
@@ -502,6 +504,21 @@ struct AttentionConsoleView: View {
         .accessibilityLabel("New task")
     }
 
+    private var settingsButton: some View {
+        SettingsLink {
+            Image(systemName: "gearshape")
+                .consoleFont(size: 15, weight: .medium)
+                .foregroundStyle(ConsoleTheme.secondaryText)
+                .frame(width: 34, height: 34)
+        }
+        .buttonStyle(.plain)
+        .frame(width: 34, height: 34)
+        .background(ConsoleTheme.raisedSurface, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(ConsoleTheme.divider))
+        .help("Open Settings")
+        .accessibilityLabel("Settings")
+    }
+
     @ViewBuilder
     private var taskContent: some View {
         if console.isRefreshing && console.lastUpdated == nil {
@@ -530,6 +547,7 @@ struct AttentionConsoleView: View {
                             section: section,
                             isCollapsed: collapsedProjects.contains(section.id),
                             expandedTaskIDs: expandedTaskIDs,
+                            allowsProjectReordering: !automaticallySortProjects,
                             isTaskMonitored: console.isMonitored,
                             onToggle: { toggle(section.id) },
                             onOpen: open,
@@ -615,7 +633,7 @@ struct AttentionConsoleView: View {
     }
 
     private var consoleFooter: some View {
-        HStack(spacing: 8) {
+        ZStack {
             Picker("Task list", selection: $isShowingLibrary) {
                 Label("Console", systemImage: "pin.fill").tag(false)
                 Label("All Tasks", systemImage: "tray.full").tag(true)
@@ -623,23 +641,29 @@ struct AttentionConsoleView: View {
             .pickerStyle(.segmented)
             .controlSize(.large)
             .labelsHidden()
-            .frame(maxWidth: .infinity)
+            .frame(width: 170)
             .accessibilityLabel("Task list mode")
 
-            newTaskMenu
+            HStack(spacing: 8) {
+                settingsButton
 
-            if console.errorMessage != nil {
-                Button {
-                    Task { await console.refresh() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .consoleFont(size: 14, weight: .medium)
+                Spacer(minLength: 0)
+
+                if console.errorMessage != nil {
+                    Button {
+                        Task { await console.refresh() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .consoleFont(size: 14, weight: .medium)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(ConsoleTheme.secondaryText)
+                    .disabled(console.isRefreshing)
+                    .help("Retry refresh")
+                    .accessibilityLabel("Retry loading tasks")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(ConsoleTheme.secondaryText)
-                .disabled(console.isRefreshing)
-                .help("Retry refresh")
-                .accessibilityLabel("Retry loading tasks")
+
+                newTaskMenu
             }
         }
         .consoleFont(size: 12.5)
@@ -744,6 +768,7 @@ struct AttentionConsoleView: View {
     }
 
     private func moveProject(_ sourceID: String, _ targetID: String, _ insertAfter: Bool) -> Bool {
+        guard !automaticallySortProjects else { return false }
         let projectsByID = Dictionary(uniqueKeysWithValues: console.projects.map { ($0.key, $0) })
         guard let source = projectsByID[sourceID],
               projectsByID[targetID] != nil,

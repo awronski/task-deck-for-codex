@@ -49,6 +49,8 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
         let agentNickname: String
         let agentPath: String
         let parentThreadID: String?
+        let modelName: String?
+        let thinkingEffort: String?
         let recencyAtMilliseconds: Int64
         let createdAtMilliseconds: Int64
 
@@ -61,6 +63,8 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
             case agentNickname = "agent_nickname"
             case agentPath = "agent_path"
             case parentThreadID = "parent_thread_id"
+            case modelName = "model"
+            case thinkingEffort = "reasoning_effort"
             case recencyAtMilliseconds = "recency_at_ms"
             case createdAtMilliseconds = "created_at_ms"
         }
@@ -74,6 +78,41 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
             case id
             case threadName = "thread_name"
         }
+    }
+
+    private struct SQLiteSchemaRow: Decodable {
+        let schemaVersion: Int
+        let columnsJSON: String
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case columnsJSON = "columns_json"
+        }
+    }
+
+    private struct SQLiteSchemaVersionRow: Decodable {
+        let schemaVersion: Int
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+        }
+    }
+
+    private struct VersionedQueryOutput {
+        let schemaVersion: Int
+        let rows: Data
+    }
+
+    private struct DatabaseIdentity: Equatable {
+        let deviceNumber: UInt64?
+        let fileNumber: UInt64?
+        let creationDate: Date?
+    }
+
+    private struct ThreadSchema {
+        let version: Int
+        let columns: Set<String>
+        let databaseIdentity: DatabaseIdentity
     }
 
     private struct RolloutCursor: Sendable {
@@ -93,6 +132,7 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
     private let homeDirectory: String
     private var cursors: [String: RolloutCursor] = [:]
     private var lastProjectCatalog: CodexProjectCatalog?
+    private var threadSchema: ThreadSchema?
 
     public init(
         codexHome: URL? = nil,
@@ -172,6 +212,8 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
                     isChat: resolvedProject.isChat,
                     kind: kind,
                     status: status,
+                    modelName: row.modelName,
+                    thinkingEffort: row.thinkingEffort,
                     activity: reducer?.activity,
                     updatedAt: updatedAt,
                     workingSince: status == .working ? reducer?.workingSince : nil,
@@ -282,7 +324,10 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
         throw CodexRepositoryError.projectCatalogMissing(projectCatalogURL.path)
     }
 
-    private func queryThreadRows(including kinds: Set<CodexTaskKind>) throws -> [ThreadRow] {
+    private func queryThreadRows(
+        including kinds: Set<CodexTaskKind>,
+        allowsSchemaRetry: Bool = true
+    ) throws -> [ThreadRow] {
         guard FileManager.default.fileExists(atPath: databaseURL.path) else {
             throw CodexRepositoryError.databaseMissing(databaseURL.path)
         }
@@ -307,6 +352,11 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
             kindPredicates.append("COALESCE(source, '') = 'exec'")
         }
         let kindPredicate = kindPredicates.map { "(\($0))" }.joined(separator: " OR ")
+        let schema = try loadThreadSchema()
+        let modelSelection = schema.columns.contains("model") ? "model" : "NULL AS model"
+        let effortSelection = schema.columns.contains("reasoning_effort")
+            ? "reasoning_effort"
+            : "NULL AS reasoning_effort"
 
         let query = """
         SELECT
@@ -319,6 +369,8 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
             COALESCE(agent_role, '') AS agent_role,
             COALESCE(agent_nickname, '') AS agent_nickname,
             COALESCE(agent_path, '') AS agent_path,
+            \(modelSelection),
+            \(effortSelection),
             (SELECT parent_thread_id
              FROM thread_spawn_edges
              WHERE child_thread_id = threads.id
@@ -332,36 +384,123 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
         ORDER BY recency_at_ms DESC
         """
 
+        let output: VersionedQueryOutput
+        do {
+            output = try runVersionedDatabaseQuery(query)
+        } catch let failure as SQLiteFailure {
+            if allowsSchemaRetry, failure.message.localizedCaseInsensitiveContains("no such column") {
+                threadSchema = nil
+                return try queryThreadRows(including: kinds, allowsSchemaRetry: false)
+            }
+            throw CodexRepositoryError.sqliteFailed(failure.message)
+        }
+
+        let databaseWasReplaced = databaseIdentity() != schema.databaseIdentity
+        let schemaVersionChanged = output.schemaVersion != schema.version
+        if allowsSchemaRetry, databaseWasReplaced || schemaVersionChanged {
+            threadSchema = nil
+            return try queryThreadRows(including: kinds, allowsSchemaRetry: false)
+        }
+
+        guard !output.rows.isEmpty else { return [] }
+        let rows: [ThreadRow]
+        do {
+            rows = try JSONDecoder().decode([ThreadRow].self, from: output.rows)
+        } catch {
+            throw CodexRepositoryError.invalidDatabaseResponse
+        }
+        return rows
+    }
+
+    private func loadThreadSchema() throws -> ThreadSchema {
+        let identity = databaseIdentity()
+        if let threadSchema, threadSchema.databaseIdentity == identity {
+            return threadSchema
+        }
+
         let output: Data
         do {
-            output = try runSQLite(arguments: ["-json", "-readonly", databaseURL.path, query])
+            output = try runDatabaseQuery(
+                """
+                SELECT
+                    (SELECT schema_version FROM pragma_schema_version) AS schema_version,
+                    json_group_array(name) AS columns_json
+                FROM pragma_table_info('threads')
+                """
+            )
+        } catch let failure as SQLiteFailure {
+            throw CodexRepositoryError.sqliteFailed(failure.message)
+        }
+
+        guard let row = try? JSONDecoder().decode([SQLiteSchemaRow].self, from: output).first,
+              let columnsData = row.columnsJSON.data(using: .utf8),
+              let columns = try? JSONDecoder().decode([String].self, from: columnsData)
+        else {
+            throw CodexRepositoryError.invalidDatabaseResponse
+        }
+        let schema = ThreadSchema(
+            version: row.schemaVersion,
+            columns: Set(columns),
+            databaseIdentity: identity
+        )
+        threadSchema = schema
+        return schema
+    }
+
+    private func databaseIdentity() -> DatabaseIdentity {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: databaseURL.path)
+        return DatabaseIdentity(
+            deviceNumber: (attributes?[.systemNumber] as? NSNumber)?.uint64Value,
+            fileNumber: (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value,
+            creationDate: attributes?[.creationDate] as? Date
+        )
+    }
+
+    private func runDatabaseQuery(_ query: String) throws -> Data {
+        do {
+            return try runSQLite(arguments: ["-json", "-readonly", databaseURL.path, query])
         } catch let failure as SQLiteFailure {
             // sqlite3 returns SQLITE_CANTOPEN as process status 14.
-            guard failure.status == 14 else {
-                throw CodexRepositoryError.sqliteFailed(failure.message)
-            }
+            guard failure.status == 14 else { throw failure }
 
             // Codex uses WAL mode, but SQLite removes its sidecars when the last
             // connection closes. Reopen the existing database read-write only so
             // SQLite can recreate those files; query_only keeps the SQL read-only.
-            do {
-                output = try runSQLite(arguments: [
-                    "-json",
-                    "-cmd", "PRAGMA query_only=ON",
-                    databaseURL.absoluteString + "?mode=rw",
-                    query
-                ])
-            } catch let fallbackFailure as SQLiteFailure {
-                throw CodexRepositoryError.sqliteFailed(fallbackFailure.message)
-            }
+            return try runSQLite(arguments: [
+                "-json",
+                "-cmd", "PRAGMA query_only=ON",
+                databaseURL.absoluteString + "?mode=rw",
+                query
+            ])
         }
+    }
 
-        guard !output.isEmpty else { return [] }
-        do {
-            return try JSONDecoder().decode([ThreadRow].self, from: output)
-        } catch {
+    private func runVersionedDatabaseQuery(_ query: String) throws -> VersionedQueryOutput {
+        let output = try runDatabaseQuery(
+            """
+            SELECT schema_version FROM pragma_schema_version;
+            \(query)
+            """
+        )
+        let separatorIndex = output.firstIndex(of: 0x0A)
+        let versionData = separatorIndex.map { Data(output[..<$0]) } ?? output
+        let rows = separatorIndex.map { index in
+            Data(output[output.index(after: index)...].drop { byte in
+                byte == 0x0A || byte == 0x0D || byte == 0x20 || byte == 0x09
+            })
+        } ?? Data()
+        guard !versionData.isEmpty,
+              let version = try? JSONDecoder().decode(
+                  [SQLiteSchemaVersionRow].self,
+                  from: versionData
+              ).first?.schemaVersion
+        else {
             throw CodexRepositoryError.invalidDatabaseResponse
         }
+        return VersionedQueryOutput(
+            schemaVersion: version,
+            rows: rows
+        )
     }
 
     private func runSQLite(arguments: [String]) throws -> Data {

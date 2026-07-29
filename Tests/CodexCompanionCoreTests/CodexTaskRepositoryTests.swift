@@ -49,6 +49,168 @@ struct CodexTaskRepositoryTests {
     }
 
     @Test
+    func loadsTasksWhenOptionalModelMetadataColumnsAreMissing() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let taskID = UUID().uuidString
+        try fixture.writeCatalog(
+            projects: [(id: "project", name: "Project", path: "/Users/test/code/project")],
+            assignments: [taskID: "project"]
+        )
+        try fixture.writeDatabase(rows: [
+            .init(
+                id: taskID,
+                title: "Legacy schema task",
+                cwd: "/Users/test/code/project",
+                rolloutPath: nil
+            )
+        ])
+
+        let snapshot = try await fixture.repository().loadSnapshot(
+            including: CodexTaskKind.defaultVisible
+        )
+
+        #expect(snapshot.tasks.map(\.id) == [taskID])
+        #expect(snapshot.tasks.first?.modelName == nil)
+        #expect(snapshot.tasks.first?.thinkingEffort == nil)
+    }
+
+    @Test
+    func refreshesOptionalMetadataWhenTheDatabaseSchemaChanges() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let taskID = UUID().uuidString
+        try fixture.writeCatalog(
+            projects: [(id: "project", name: "Project", path: "/Users/test/code/project")],
+            assignments: [taskID: "project"]
+        )
+        try fixture.writeDatabase(rows: [
+            .init(
+                id: taskID,
+                title: "Migrated schema task",
+                cwd: "/Users/test/code/project",
+                rolloutPath: nil
+            )
+        ])
+        let repository = fixture.repository()
+
+        let legacySnapshot = try await repository.loadSnapshot(
+            including: CodexTaskKind.defaultVisible
+        )
+        #expect(legacySnapshot.tasks.first?.modelName == nil)
+        #expect(legacySnapshot.tasks.first?.thinkingEffort == nil)
+
+        try fixture.addModelMetadataColumns()
+        try fixture.setModelMetadata(
+            taskID: taskID,
+            modelName: "gpt-5.6-sol",
+            thinkingEffort: "high"
+        )
+        let migratedSnapshot = try await repository.loadSnapshot(
+            including: CodexTaskKind.defaultVisible
+        )
+
+        #expect(migratedSnapshot.tasks.first?.modelName == "gpt-5.6-sol")
+        #expect(migratedSnapshot.tasks.first?.thinkingEffort == "high")
+    }
+
+    @Test
+    func refreshesTheSchemaWhenNoTasksMatchDuringMigration() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let taskID = UUID().uuidString
+        try fixture.writeCatalog(
+            projects: [(id: "project", name: "Project", path: "/Users/test/code/project")],
+            assignments: [taskID: "project"]
+        )
+        try fixture.writeDatabase(rows: [])
+        let repository = fixture.repository()
+
+        let legacySnapshot = try await repository.loadSnapshot(
+            including: CodexTaskKind.defaultVisible
+        )
+        #expect(legacySnapshot.tasks.isEmpty)
+
+        try fixture.addModelMetadataColumns()
+        let emptyMigratedSnapshot = try await repository.loadSnapshot(
+            including: CodexTaskKind.defaultVisible
+        )
+        #expect(emptyMigratedSnapshot.tasks.isEmpty)
+
+        try fixture.insertDatabaseRow(
+            .init(
+                id: taskID,
+                title: "Post-migration task",
+                cwd: "/Users/test/code/project",
+                rolloutPath: nil,
+                modelName: "gpt-5.6-sol",
+                thinkingEffort: "high"
+            ),
+            includesModelMetadataColumns: true
+        )
+        let populatedSnapshot = try await repository.loadSnapshot(
+            including: CodexTaskKind.defaultVisible
+        )
+
+        #expect(populatedSnapshot.tasks.first?.modelName == "gpt-5.6-sol")
+        #expect(populatedSnapshot.tasks.first?.thinkingEffort == "high")
+    }
+
+    @Test
+    func refreshesOptionalMetadataWhenTheDatabaseIsReplaced() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let taskID = UUID().uuidString
+        try fixture.writeCatalog(
+            projects: [(id: "project", name: "Project", path: "/Users/test/code/project")],
+            assignments: [taskID: "project"]
+        )
+        let row = DatabaseRow(
+            id: taskID,
+            title: "Replaced database task",
+            cwd: "/Users/test/code/project",
+            rolloutPath: nil,
+            modelName: "gpt-5.6-sol",
+            thinkingEffort: "high"
+        )
+        try fixture.writeDatabase(rows: [row], includesModelMetadataColumns: true)
+        let repository = fixture.repository()
+
+        let currentSnapshot = try await repository.loadSnapshot(
+            including: CodexTaskKind.defaultVisible
+        )
+        #expect(currentSnapshot.tasks.first?.modelName == "gpt-5.6-sol")
+
+        try fixture.replaceDatabase(rows: [
+            .init(
+                id: taskID,
+                title: "Replaced database task",
+                cwd: "/Users/test/code/project",
+                rolloutPath: nil
+            )
+        ])
+        let replacementSnapshot = try await repository.loadSnapshot(
+            including: CodexTaskKind.defaultVisible
+        )
+
+        #expect(replacementSnapshot.tasks.map(\.id) == [taskID])
+        #expect(replacementSnapshot.tasks.first?.modelName == nil)
+        #expect(replacementSnapshot.tasks.first?.thinkingEffort == nil)
+
+        try fixture.replaceDatabase(rows: [row], includesModelMetadataColumns: true)
+        let restoredSnapshot = try await repository.loadSnapshot(
+            including: CodexTaskKind.defaultVisible
+        )
+
+        #expect(restoredSnapshot.tasks.first?.modelName == "gpt-5.6-sol")
+        #expect(restoredSnapshot.tasks.first?.thinkingEffort == "high")
+    }
+
+    @Test
     func usesCodexCommandToArchiveAndRestoreTask() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.remove() }
@@ -148,7 +310,14 @@ struct CodexTaskRepositoryTests {
             projectlessTaskIDs: [unassignedID]
         )
         try fixture.writeDatabase(rows: [
-            .init(id: regularID, title: "Regular task", cwd: "/Users/test/code/one", rolloutPath: regularRollout.path),
+            .init(
+                id: regularID,
+                title: "Regular task",
+                cwd: "/Users/test/code/one",
+                rolloutPath: regularRollout.path,
+                modelName: "gpt-5.6-sol",
+                thinkingEffort: "high"
+            ),
             .init(
                 id: automationID,
                 title: "Automation task",
@@ -159,7 +328,7 @@ struct CodexTaskRepositoryTests {
             .init(id: unassignedID, title: "Legacy task", cwd: "/Users/test/code/one", rolloutPath: nil),
             .init(id: agentID, title: "Internal agent", cwd: "/Users/test/code/one", rolloutPath: agentRollout.path),
             .init(id: batchID, title: "Batch task", cwd: "/Users/test/code/one", rolloutPath: batchRollout.path, source: "exec")
-        ])
+        ], includesModelMetadataColumns: true)
 
         let repository = fixture.repository()
         let defaultSnapshot = try await repository.loadSnapshot(including: CodexTaskKind.defaultVisible)
@@ -167,6 +336,10 @@ struct CodexTaskRepositoryTests {
         #expect(defaultSnapshot.tasks.map(\.id) == [regularID, automationID])
         #expect(defaultSnapshot.tasks.map(\.kind) == [.regular, .automation])
         #expect(defaultSnapshot.tasks.map(\.status) == [.working, .finished])
+        #expect(defaultSnapshot.tasks.first?.modelName == "gpt-5.6-sol")
+        #expect(defaultSnapshot.tasks.first?.thinkingEffort == "high")
+        #expect(defaultSnapshot.tasks.last?.modelName == nil)
+        #expect(defaultSnapshot.tasks.last?.thinkingEffort == nil)
         #expect(defaultSnapshot.tasks.first?.workingSince == Date(timeIntervalSince1970: 1_784_648_776))
         #expect(defaultSnapshot.tasks.first?.activity?.headline == "Reviewing the project structure.")
         #expect(defaultSnapshot.tasks.last?.finishedAt == automationFinishedAt)
@@ -314,6 +487,8 @@ private struct DatabaseRow {
     let rolloutPath: String?
     let source: String
     let threadSource: String
+    let modelName: String?
+    let thinkingEffort: String?
 
     init(
         id: String,
@@ -321,7 +496,9 @@ private struct DatabaseRow {
         cwd: String,
         rolloutPath: String?,
         source: String = "vscode",
-        threadSource: String = "user"
+        threadSource: String = "user",
+        modelName: String? = nil,
+        thinkingEffort: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -329,6 +506,8 @@ private struct DatabaseRow {
         self.rolloutPath = rolloutPath
         self.source = source
         self.threadSource = threadSource
+        self.modelName = modelName
+        self.thinkingEffort = thinkingEffort
     }
 }
 
@@ -399,7 +578,13 @@ private struct RepositoryFixture {
         try data.write(to: root.appendingPathComponent(".codex-global-state.json"))
     }
 
-    func writeDatabase(rows: [DatabaseRow]) throws {
+    func writeDatabase(
+        rows: [DatabaseRow],
+        includesModelMetadataColumns: Bool = false
+    ) throws {
+        let metadataColumnDefinitions = includesModelMetadataColumns
+            ? "model TEXT,\n                reasoning_effort TEXT,\n                "
+            : ""
         var statements = [
             """
             CREATE TABLE threads (
@@ -414,7 +599,7 @@ private struct RepositoryFixture {
                 agent_role TEXT,
                 agent_nickname TEXT,
                 agent_path TEXT,
-                created_at_ms INTEGER,
+                \(metadataColumnDefinitions)created_at_ms INTEGER,
                 created_at INTEGER,
                 recency_at_ms INTEGER,
                 updated_at INTEGER,
@@ -426,11 +611,16 @@ private struct RepositoryFixture {
         ]
         statements += rows.enumerated().map { index, row in
             let rollout = row.rolloutPath.map { "'\(sql($0))'" } ?? "NULL"
+            let modelName = row.modelName.map { "'\(sql($0))'" } ?? "NULL"
+            let thinkingEffort = row.thinkingEffort.map { "'\(sql($0))'" } ?? "NULL"
+            let metadataValues = includesModelMetadataColumns
+                ? "\(modelName), \(thinkingEffort), "
+                : ""
             return """
             INSERT INTO threads VALUES (
                 '\(sql(row.id))', '\(sql(row.title))', '', '', '\(sql(row.cwd))', \(rollout),
                 '\(sql(row.source))', '\(sql(row.threadSource))', '', '', '',
-                \(1_700_000_000_000 + index), 0, \(1_800_000_000_000 - index), 0, 0, NULL
+                \(metadataValues)\(1_700_000_000_000 + index), 0, \(1_800_000_000_000 - index), 0, 0, NULL
             )
             """
         }
@@ -448,6 +638,71 @@ private struct RepositoryFixture {
         }
         try Data((lines.joined(separator: "\n") + "\n").utf8)
             .write(to: root.appendingPathComponent("session_index.jsonl"))
+    }
+
+    func addModelMetadataColumns() throws {
+        try executeSQL(
+            """
+            ALTER TABLE threads ADD COLUMN model TEXT;
+            ALTER TABLE threads ADD COLUMN reasoning_effort TEXT
+            """
+        )
+    }
+
+    func setModelMetadata(
+        taskID: String,
+        modelName: String,
+        thinkingEffort: String
+    ) throws {
+        try executeSQL(
+            """
+            UPDATE threads
+            SET model = '\(sql(modelName))', reasoning_effort = '\(sql(thinkingEffort))'
+            WHERE id = '\(sql(taskID))'
+            """
+        )
+    }
+
+    func insertDatabaseRow(
+        _ row: DatabaseRow,
+        includesModelMetadataColumns: Bool = false
+    ) throws {
+        let rollout = row.rolloutPath.map { "'\(sql($0))'" } ?? "NULL"
+        let modelName = row.modelName.map { "'\(sql($0))'" } ?? "NULL"
+        let thinkingEffort = row.thinkingEffort.map { "'\(sql($0))'" } ?? "NULL"
+        let metadataValues = includesModelMetadataColumns
+            ? "\(modelName), \(thinkingEffort), "
+            : ""
+        let metadataColumns = includesModelMetadataColumns
+            ? "model, reasoning_effort, "
+            : ""
+        try executeSQL(
+            """
+            INSERT INTO threads (
+                id, title, first_user_message, preview, cwd, rollout_path,
+                source, thread_source, agent_role, agent_nickname, agent_path,
+                \(metadataColumns)created_at_ms, created_at, recency_at_ms, updated_at,
+                archived, archived_at
+            ) VALUES (
+                '\(sql(row.id))', '\(sql(row.title))', '', '', '\(sql(row.cwd))', \(rollout),
+                '\(sql(row.source))', '\(sql(row.threadSource))', '', '', '',
+                \(metadataValues)1700000000000, 0, 1800000000000, 0, 0, NULL
+            )
+            """
+        )
+    }
+
+    func replaceDatabase(
+        rows: [DatabaseRow],
+        includesModelMetadataColumns: Bool = false
+    ) throws {
+        try FileManager.default.removeItem(
+            at: root.appendingPathComponent("state_5.sqlite")
+        )
+        try writeDatabase(
+            rows: rows,
+            includesModelMetadataColumns: includesModelMetadataColumns
+        )
     }
 
     func convertDatabaseToWALWithoutSidecars() throws {

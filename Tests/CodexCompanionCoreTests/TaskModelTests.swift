@@ -183,6 +183,48 @@ struct TaskModelTests {
     }
 
     @Test
+    func automaticProjectOrderPromotesWorkingAndNewlyFinishedProjectsAlphabetically() {
+        let now = Date()
+        let sections = TaskGrouping.sections(from: [
+            task("zebra-inactive", project: "zebra", status: .inactive, date: now),
+            task("bravo-finished", project: "bravo", status: .finished, date: now.addingTimeInterval(-1)),
+            task("alpha-working", project: "alpha", status: .working, date: now.addingTimeInterval(-2)),
+            task("delta-waiting", project: "delta", status: .waitingForInput, date: now.addingTimeInterval(-3)),
+            task("charlie-inactive", project: "charlie", status: .inactive, date: now.addingTimeInterval(-4))
+        ])
+
+        let ordered = ProjectOrdering.sortingAutomatically(sections)
+
+        #expect(ordered.map(\.name) == ["alpha", "bravo", "charlie", "delta", "zebra"])
+    }
+
+    @Test
+    func automaticProjectOrderKeepsTaskOrderAndChatsLast() {
+        let now = Date()
+        let projectTasks = [
+            task("inactive", project: "client", status: .inactive, date: now),
+            task("finished", project: "client", status: .finished, date: now.addingTimeInterval(-1)),
+            task("working", project: "client", status: .working, date: now.addingTimeInterval(-2))
+        ]
+        let sections = TaskGrouping.sections(
+            from: projectTasks,
+            includingEmptyProjects: [
+                ProjectIdentity(
+                    key: "chats",
+                    name: "Chats",
+                    path: "/Documents/Codex",
+                    isChat: true
+                )
+            ]
+        )
+
+        let ordered = ProjectOrdering.sortingAutomatically(sections)
+
+        #expect(ordered.map(\.name) == ["client", "Chats"])
+        #expect(ordered[0].tasks.map(\.id) == ["working", "finished", "inactive"])
+    }
+
+    @Test
     func projectCanMoveBeforeOrAfterADropTarget() {
         let order = ["client", "server", "notes"]
 

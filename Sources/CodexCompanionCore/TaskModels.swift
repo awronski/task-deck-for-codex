@@ -114,6 +114,8 @@ public struct CodexTask: Identifiable, Equatable, Sendable {
     public let kind: CodexTaskKind
     public let priority: TaskPriority
     public let status: AttentionStatus
+    public let modelName: String?
+    public let thinkingEffort: String?
     public let activity: TaskActivityPreview?
     public let updatedAt: Date
     public let workingSince: Date?
@@ -130,6 +132,8 @@ public struct CodexTask: Identifiable, Equatable, Sendable {
         kind: CodexTaskKind = .regular,
         priority: TaskPriority = .none,
         status: AttentionStatus,
+        modelName: String? = nil,
+        thinkingEffort: String? = nil,
         activity: TaskActivityPreview? = nil,
         updatedAt: Date,
         workingSince: Date? = nil,
@@ -145,6 +149,8 @@ public struct CodexTask: Identifiable, Equatable, Sendable {
         self.kind = kind
         self.priority = priority
         self.status = status
+        self.modelName = modelName
+        self.thinkingEffort = thinkingEffort
         self.activity = activity
         self.updatedAt = updatedAt
         self.workingSince = workingSince
@@ -316,6 +322,26 @@ public enum ProjectOrdering {
                 return lhsRank < rhsRank
             }
             .map(\.element)
+    }
+
+    public static func sortingAutomatically(_ sections: [ProjectSection]) -> [ProjectSection] {
+        sections.sorted { lhs, rhs in
+            if lhs.isChat != rhs.isChat {
+                return !lhs.isChat
+            }
+
+            let lhsHasRecentActivity = lhs.tasks.contains { $0.status == .working || $0.status == .finished }
+            let rhsHasRecentActivity = rhs.tasks.contains { $0.status == .working || $0.status == .finished }
+            if lhsHasRecentActivity != rhsHasRecentActivity {
+                return lhsHasRecentActivity
+            }
+
+            let nameOrder = lhs.name.localizedStandardCompare(rhs.name)
+            if nameOrder != .orderedSame {
+                return nameOrder == .orderedAscending
+            }
+            return lhs.id < rhs.id
+        }
     }
 
     public static func moving(

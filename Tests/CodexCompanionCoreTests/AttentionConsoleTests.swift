@@ -375,7 +375,9 @@ struct AttentionConsoleTests {
             "task",
             title: "Generated title",
             status: .working,
-            activity: activity
+            activity: activity,
+            modelName: "gpt-5.6-sol",
+            thinkingEffort: "high"
         )
         let console = AttentionConsole(
             loader: StaticTaskLoader(tasks: [task]),
@@ -391,6 +393,8 @@ struct AttentionConsoleTests {
         console.setPriority(.orange, for: task.id)
 
         #expect(console.allTasks.first?.activity == activity)
+        #expect(console.allTasks.first?.modelName == "gpt-5.6-sol")
+        #expect(console.allTasks.first?.thinkingEffort == "high")
     }
 
     @Test
@@ -808,6 +812,8 @@ private func codexTask(
     kind: CodexTaskKind = .regular,
     status: AttentionStatus,
     activity: TaskActivityPreview? = nil,
+    modelName: String? = nil,
+    thinkingEffort: String? = nil,
     updatedAt: Date = .now,
     workingSince: Date? = nil,
     finishedAt: Date? = nil
@@ -821,6 +827,8 @@ private func codexTask(
         isChat: false,
         kind: kind,
         status: status,
+        modelName: modelName,
+        thinkingEffort: thinkingEffort,
         activity: activity,
         updatedAt: updatedAt,
         workingSince: workingSince,

@@ -592,6 +592,7 @@ struct ProjectSectionView: View {
     let section: ProjectSection
     let isCollapsed: Bool
     let expandedTaskIDs: Set<String>
+    let allowsProjectReordering: Bool
     let isTaskMonitored: (String) -> Bool
     let onToggle: () -> Void
     let onOpen: (CodexTask) -> Void
@@ -673,7 +674,7 @@ struct ProjectSectionView: View {
                 .help(section.isChat ? "Start a new chat" : "Start a new task in \(section.name)")
                 .accessibilityLabel(section.isChat ? "New chat" : "New task in \(section.name)")
 
-                if section.isChat {
+                if section.isChat || !allowsProjectReordering {
                     Color.clear
                         .frame(width: 42, height: 34)
                         .accessibilityHidden(true)
@@ -702,10 +703,10 @@ struct ProjectSectionView: View {
                 in: RoundedRectangle(cornerRadius: 7)
             )
             .dropDestination(for: String.self) { projectIDs, location in
-                guard let sourceID = projectIDs.first else { return false }
+                guard allowsProjectReordering, let sourceID = projectIDs.first else { return false }
                 return onMoveProject(sourceID, section.id, location.y > 22)
             } isTargeted: { isTargeted in
-                isDropTarget = isTargeted
+                isDropTarget = allowsProjectReordering && isTargeted
             }
 
             if !isCollapsed, !section.tasks.isEmpty {
@@ -770,6 +771,7 @@ private struct TaskRow: View {
     let onRemoveReminder: () -> Void
     let onTogglePreview: () -> Void
 
+    @AppStorage("showTaskModelDetails") private var showTaskModelDetails = false
     @State private var isHovered = false
     @State private var isEditingTitle = false
     @State private var isTitleHovered = false
@@ -783,6 +785,15 @@ private struct TaskRow: View {
 
     private var canPreview: Bool {
         task.status != .inactive && task.activity != nil
+    }
+
+    private var modelDetails: String? {
+        guard showTaskModelDetails else { return nil }
+        let values = [task.modelName, task.thinkingEffort].compactMap { value -> String? in
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return values.isEmpty ? nil : values.joined(separator: " · ")
     }
 
     var body: some View {
@@ -841,6 +852,16 @@ private struct TaskRow: View {
                     if task.status != .inactive {
                         StatusChip(status: task.status, workingSince: task.workingSince)
                             .fixedSize()
+                    }
+
+                    if let modelDetails {
+                        Text(modelDetails)
+                            .consoleFont(size: 11.5, weight: .medium)
+                            .foregroundStyle(ConsoleTheme.secondaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help(modelDetails)
+                            .accessibilityLabel("Model and thinking effort: \(modelDetails)")
                     }
 
                     Spacer(minLength: 8)
