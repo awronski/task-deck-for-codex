@@ -23,6 +23,7 @@ struct TaskDeckForCodexApp: App {
         let noteStorage = UserDefaultsTaskNoteStorage()
         let reminderStorage = UserDefaultsTaskReminderStorage()
         let projectOrderStorage = UserDefaultsProjectOrderStorage()
+        let projectAppearanceStorage = UserDefaultsProjectAppearanceStorage()
         _console = State(
             initialValue: AttentionConsole(
                 loader: repository,
@@ -32,7 +33,9 @@ struct TaskDeckForCodexApp: App {
                 priorityStorage: priorityStorage,
                 noteStorage: noteStorage,
                 reminderStorage: reminderStorage,
-                projectOrderStorage: projectOrderStorage
+                projectOrderStorage: projectOrderStorage,
+                projectAppearanceStorage: projectAppearanceStorage,
+                renamer: repository
             )
         )
     }

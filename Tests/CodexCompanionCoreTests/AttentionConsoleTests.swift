@@ -95,10 +95,63 @@ struct AttentionConsoleTests {
     }
 
     @Test
+    func titleRenameCanAlsoUpdateCodex() async {
+        let task = codexTask(
+            "task",
+            title: "Generated title",
+            status: .inactive
+        )
+        let renamer = TestTaskRenamer()
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [task]),
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage(),
+            renamer: renamer
+        )
+        await console.refresh()
+
+        let didRename = await console.setTitle("  Shared title  ", for: task.id, syncsToCodex: true)
+        let renames = await renamer.renames
+
+        #expect(didRename)
+        #expect(console.allTasks.first?.title == "Shared title")
+        #expect(renames == [.init(taskID: task.id, title: "Shared title")])
+    }
+
+    @Test
+    func failedCodexRenameKeepsTheLocalTitleAndShowsTheError() async {
+        let task = codexTask(
+            "task",
+            title: "Generated title",
+            status: .inactive
+        )
+        let renamer = TestTaskRenamer(error: TestRenameError())
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [task]),
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage(),
+            renamer: renamer
+        )
+        await console.refresh()
+
+        let didRename = await console.setTitle("Local fallback", for: task.id, syncsToCodex: true)
+
+        #expect(!didRename)
+        #expect(console.allTasks.first?.title == "Local fallback")
+        #expect(console.errorMessage == "Codex rename failed")
+    }
+
+    @Test
     func taskFlagsPersistAndNoFlagRemovesTheOverride() async {
         let task = codexTask(
             "task",
-            title: "Prioritized task",
+            title: "Production-ready task",
             status: .inactive
         )
         let priorities = TestTaskPriorityStorage()
@@ -120,8 +173,8 @@ struct AttentionConsoleTests {
             priorityChangeWasObserved.withLock { $0 = true }
         }
 
-        console.setPriority(.red, for: task.id)
-        #expect(console.allTasks.first?.priority == .red)
+        console.setPriority(.blue, for: task.id)
+        #expect(console.allTasks.first?.priority == .blue)
         #expect(priorityChangeWasObserved.withLock { $0 })
 
         let relaunched = AttentionConsole(
@@ -134,11 +187,56 @@ struct AttentionConsoleTests {
         )
         await relaunched.refresh()
 
-        #expect(relaunched.allTasks.first?.priority == .red)
+        #expect(relaunched.allTasks.first?.priority == .blue)
 
         relaunched.setPriority(.none, for: task.id)
         #expect(relaunched.allTasks.first?.priority == TaskPriority.none)
         #expect(priorities.load().isEmpty)
+    }
+
+    @Test
+    func projectAppearancePersistsAndCanReturnToTheSuggestedDefault() {
+        let appearances = TestProjectAppearanceStorage()
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: []),
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage(),
+            projectAppearanceStorage: appearances
+        )
+        let appearance = ProjectAppearance(
+            iconName: "terminal",
+            colorID: ProjectAppearance.noBackgroundColorID
+        )
+
+        let appearanceChangeWasObserved = Mutex(false)
+        withObservationTracking {
+            _ = console.projectAppearance(for: "/code/cli")
+        } onChange: {
+            appearanceChangeWasObserved.withLock { $0 = true }
+        }
+
+        console.setProjectAppearance(appearance, for: "/code/cli")
+        #expect(console.projectAppearance(for: "/code/cli") == appearance)
+        #expect(appearanceChangeWasObserved.withLock { $0 })
+        #expect(appearances.load() == ["/code/cli": appearance])
+
+        let relaunched = AttentionConsole(
+            loader: StaticTaskLoader(tasks: []),
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage(),
+            projectAppearanceStorage: appearances
+        )
+        #expect(relaunched.projectAppearance(for: "/code/cli") == appearance)
+
+        relaunched.setProjectAppearance(nil, for: "/code/cli")
+        #expect(relaunched.projectAppearance(for: "/code/cli") == nil)
+        #expect(appearances.load().isEmpty)
     }
 
     @Test
@@ -803,6 +901,29 @@ private actor TestTaskArchiver: CodexTaskArchiving {
     }
 }
 
+private actor TestTaskRenamer: CodexTaskRenaming {
+    struct Rename: Equatable {
+        let taskID: String
+        let title: String
+    }
+
+    private(set) var renames: [Rename] = []
+    private let error: (any Error)?
+
+    init(error: (any Error)? = nil) {
+        self.error = error
+    }
+
+    func setTitle(_ title: String, taskID: String) async throws {
+        if let error { throw error }
+        renames.append(Rename(taskID: taskID, title: title))
+    }
+}
+
+private struct TestRenameError: LocalizedError {
+    var errorDescription: String? { "Codex rename failed" }
+}
+
 private func codexTask(
     _ id: String,
     title: String,
@@ -920,4 +1041,16 @@ private final class TestProjectOrderStorage: ProjectOrderStoring {
 
     func load() -> [String] { projectIDs }
     func save(_ projectIDs: [String]) { self.projectIDs = projectIDs }
+}
+
+@MainActor
+private final class TestProjectAppearanceStorage: ProjectAppearanceStoring {
+    private var appearances: [String: ProjectAppearance]
+
+    init(appearances: [String: ProjectAppearance] = [:]) {
+        self.appearances = appearances
+    }
+
+    func load() -> [String: ProjectAppearance] { appearances }
+    func save(_ appearances: [String: ProjectAppearance]) { self.appearances = appearances }
 }

@@ -15,12 +15,14 @@ public final class AttentionConsole {
 
     @ObservationIgnored private let loader: any CodexTaskLoading
     @ObservationIgnored private let archiver: any CodexTaskArchiving
+    @ObservationIgnored private let renamer: (any CodexTaskRenaming)?
     @ObservationIgnored private let storage: any VisibilityStoring
     @ObservationIgnored private let titleStorage: any TaskTitleStoring
     @ObservationIgnored private let priorityStorage: any TaskPriorityStoring
     @ObservationIgnored private let noteStorage: any TaskNoteStoring
     @ObservationIgnored private let reminderStorage: any TaskReminderStoring
     @ObservationIgnored private let projectOrderStorage: any ProjectOrderStoring
+    @ObservationIgnored private let projectAppearanceStorage: (any ProjectAppearanceStoring)?
     @ObservationIgnored private let launchedAt: Date
     private var ledger: VisibilityLedger
     private var titleOverrides: [String: String]
@@ -28,6 +30,7 @@ public final class AttentionConsole {
     private var notes: [String: String]
     private var reminders: [String: TaskReminder]
     public private(set) var projectOrderIDs: [String]
+    public private(set) var projectAppearances: [String: ProjectAppearance]
     public private(set) var includedTaskKinds = CodexTaskKind.defaultVisible
     @ObservationIgnored private var pollingTask: Task<Void, Never>?
     @ObservationIgnored private var refreshInFlight = false
@@ -42,16 +45,20 @@ public final class AttentionConsole {
         noteStorage: any TaskNoteStoring = UserDefaultsTaskNoteStorage(),
         reminderStorage: any TaskReminderStoring = UserDefaultsTaskReminderStorage(),
         projectOrderStorage: any ProjectOrderStoring,
+        projectAppearanceStorage: (any ProjectAppearanceStoring)? = nil,
+        renamer: (any CodexTaskRenaming)? = nil,
         launchedAt: Date = .now
     ) {
         self.loader = loader
         self.archiver = archiver
+        self.renamer = renamer
         self.storage = storage
         self.titleStorage = titleStorage
         self.priorityStorage = priorityStorage
         self.noteStorage = noteStorage
         self.reminderStorage = reminderStorage
         self.projectOrderStorage = projectOrderStorage
+        self.projectAppearanceStorage = projectAppearanceStorage
         self.launchedAt = launchedAt
         self.ledger = storage.load()
         self.titleOverrides = titleStorage.load()
@@ -59,6 +66,7 @@ public final class AttentionConsole {
         self.notes = noteStorage.load()
         self.reminders = reminderStorage.load()
         self.projectOrderIDs = projectOrderStorage.load()
+        self.projectAppearances = projectAppearanceStorage?.load() ?? [:]
     }
 
     public var allTasks: [CodexTask] {
@@ -214,6 +222,25 @@ public final class AttentionConsole {
         }
     }
 
+    @discardableResult
+    public func setTitle(_ title: String, for taskID: String, syncsToCodex: Bool) async -> Bool {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        setTitle(title, for: taskID)
+        guard syncsToCodex, !trimmedTitle.isEmpty else { return true }
+        guard let renamer else {
+            errorMessage = "Codex title syncing is unavailable."
+            return false
+        }
+
+        do {
+            try await renamer.setTitle(trimmedTitle, taskID: taskID)
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
     public func setPriority(_ priority: TaskPriority, for taskID: String) {
         guard (priorities[taskID] ?? .none) != priority else { return }
         if priority == .none {
@@ -345,6 +372,20 @@ public final class AttentionConsole {
         let uniqueProjectIDs = projectIDs.filter { seenProjectIDs.insert($0).inserted }
         self.projectOrderIDs = uniqueProjectIDs
         projectOrderStorage.save(uniqueProjectIDs)
+    }
+
+    public func projectAppearance(for projectID: String) -> ProjectAppearance? {
+        projectAppearances[projectID]
+    }
+
+    public func setProjectAppearance(_ appearance: ProjectAppearance?, for projectID: String) {
+        guard !projectID.isEmpty, projectAppearances[projectID] != appearance else { return }
+        if let appearance {
+            projectAppearances[projectID] = appearance
+        } else {
+            projectAppearances.removeValue(forKey: projectID)
+        }
+        projectAppearanceStorage?.save(projectAppearances)
     }
 
     public func setIncludedTaskKinds(_ kinds: Set<CodexTaskKind>) {

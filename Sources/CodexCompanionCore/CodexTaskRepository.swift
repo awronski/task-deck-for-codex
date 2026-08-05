@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public protocol CodexTaskLoading: Sendable {
@@ -8,12 +9,17 @@ public protocol CodexTaskArchiving: Sendable {
     func setArchived(_ archived: Bool, taskID: String) async throws
 }
 
+public protocol CodexTaskRenaming: Sendable {
+    func setTitle(_ title: String, taskID: String) async throws
+}
+
 public enum CodexRepositoryError: LocalizedError, Equatable {
     case databaseMissing(String)
     case projectCatalogMissing(String)
     case sqliteFailed(String)
     case codexExecutableMissing
     case codexCommandFailed(String)
+    case codexTitleUpdateFailed(String)
     case invalidDatabaseResponse
     case invalidProjectCatalog
     case invalidTaskID(String)
@@ -25,6 +31,7 @@ public enum CodexRepositoryError: LocalizedError, Equatable {
         case let .sqliteFailed(message): "Could not access Codex tasks: \(message)"
         case .codexExecutableMissing: "Codex could not be found. Reinstall or update the Codex app."
         case let .codexCommandFailed(message): "Codex could not update the task's archive state: \(message)"
+        case let .codexTitleUpdateFailed(message): "Codex could not rename the task: \(message)"
         case .invalidDatabaseResponse: "Codex returned an unreadable task list."
         case .invalidProjectCatalog: "Codex returned an unreadable project list."
         case let .invalidTaskID(taskID): "\(taskID) is not a valid Codex task ID."
@@ -32,7 +39,16 @@ public enum CodexRepositoryError: LocalizedError, Equatable {
     }
 }
 
-public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
+public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTaskRenaming {
+    private struct AppServerError: Decodable {
+        let message: String
+    }
+
+    private struct AppServerResponse: Decodable {
+        let id: Int?
+        let error: AppServerError?
+    }
+
     private struct SQLiteFailure: Error {
         let status: Int32?
         let message: String
@@ -122,6 +138,8 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
     }
 
     private static let initialRecoveryWindow: UInt64 = 65_536
+    private static let processPollIntervalMilliseconds: Int32 = 50
+    private static let maximumDiagnosticBytes = 16_384
 
     private let databaseURL: URL
     private let codexHomeURL: URL
@@ -130,6 +148,7 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
     private let sessionIndexURL: URL
     private let projectCatalogURL: URL
     private let homeDirectory: String
+    private let titleUpdateTimeout: TimeInterval
     private var cursors: [String: RolloutCursor] = [:]
     private var lastProjectCatalog: CodexProjectCatalog?
     private var threadSchema: ThreadSchema?
@@ -138,7 +157,8 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
         codexHome: URL? = nil,
         homeDirectory: String = NSHomeDirectory(),
         projectCatalogURL: URL? = nil,
-        codexExecutableURL: URL? = nil
+        codexExecutableURL: URL? = nil,
+        titleUpdateTimeout: TimeInterval = 5
     ) {
         let resolvedCodexHome = codexHome
             ?? ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
@@ -152,6 +172,7 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
         self.projectCatalogURL = projectCatalogURL
             ?? resolvedCodexHome.appendingPathComponent(".codex-global-state.json")
         self.homeDirectory = homeDirectory
+        self.titleUpdateTimeout = max(0.1, titleUpdateTimeout)
     }
 
     public func loadSnapshot(including kinds: Set<CodexTaskKind>) async throws -> CodexTaskSnapshot {
@@ -175,10 +196,10 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
                     homeDirectory: homeDirectory
                 )
             }
-            if project == nil, kinds.isDisjoint(with: [.unassigned, .agent, .batch]) {
+            if project == nil, kinds.isDisjoint(with: [.delegated, .unassigned, .agent, .batch]) {
                 continue
             }
-            if project != nil, kinds.isDisjoint(with: [.regular, .automation, .agent, .batch]) {
+            if project != nil, kinds.isDisjoint(with: [.regular, .delegated, .automation, .agent, .batch]) {
                 continue
             }
 
@@ -241,6 +262,282 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
             titles[entry.id] = entry.threadName
         }
         return titles
+    }
+
+    public func setTitle(_ title: String, taskID: String) async throws {
+        guard UUID(uuidString: taskID) != nil else {
+            throw CodexRepositoryError.invalidTaskID(taskID)
+        }
+        guard let codexExecutableURL,
+              FileManager.default.isExecutableFile(atPath: codexExecutableURL.path)
+        else {
+            throw CodexRepositoryError.codexExecutableMissing
+        }
+
+        let codexHomeURL = self.codexHomeURL
+        let titleUpdateTimeout = self.titleUpdateTimeout
+        let operation = Task.detached(priority: .userInitiated) {
+            try Self.performTitleUpdate(
+                title,
+                taskID: taskID,
+                codexExecutableURL: codexExecutableURL,
+                codexHomeURL: codexHomeURL,
+                timeout: titleUpdateTimeout
+            )
+        }
+        try await withTaskCancellationHandler {
+            try await operation.value
+        } onCancel: {
+            operation.cancel()
+        }
+    }
+
+    private nonisolated static func performTitleUpdate(
+        _ title: String,
+        taskID: String,
+        codexExecutableURL: URL,
+        codexHomeURL: URL,
+        timeout: TimeInterval
+    ) throws {
+        let process = Process()
+        let input = Pipe()
+        let output = Pipe()
+        process.executableURL = codexExecutableURL
+        process.arguments = ["app-server", "--listen", "stdio://"]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "CODEX_HOME": codexHomeURL.path
+        ]) { _, codexHome in codexHome }
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = output
+
+        do {
+            try process.run()
+        } catch {
+            throw CodexRepositoryError.codexTitleUpdateFailed(error.localizedDescription)
+        }
+
+        defer {
+            try? input.fileHandleForWriting.close()
+            if process.isRunning {
+                stop(process)
+            }
+        }
+
+        let timeoutNanoseconds = UInt64(timeout * 1_000_000_000)
+        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+        var responseBuffer = Data()
+        var diagnostics = Data()
+        do {
+            try writeAppServerMessage([
+                "id": 1,
+                "method": "initialize",
+                "params": [
+                    "clientInfo": [
+                        "name": "task-deck-for-codex",
+                        "title": "Task Deck for Codex",
+                        "version": "1"
+                    ]
+                ]
+            ], to: input.fileHandleForWriting)
+            try readAppServerResponse(
+                requestID: 1,
+                from: output.fileHandleForReading,
+                buffer: &responseBuffer,
+                diagnostics: &diagnostics,
+                deadline: deadline
+            )
+
+            try writeAppServerMessage(
+                ["method": "initialized"],
+                to: input.fileHandleForWriting
+            )
+            try writeAppServerMessage([
+                "id": 2,
+                "method": "thread/name/set",
+                "params": [
+                    "threadId": taskID,
+                    "name": title
+                ]
+            ], to: input.fileHandleForWriting)
+            try readAppServerResponse(
+                requestID: 2,
+                from: output.fileHandleForReading,
+                buffer: &responseBuffer,
+                diagnostics: &diagnostics,
+                deadline: deadline
+            )
+        } catch let error as CodexRepositoryError {
+            throw error
+        } catch {
+            throw CodexRepositoryError.codexTitleUpdateFailed(error.localizedDescription)
+        }
+
+        try? input.fileHandleForWriting.close()
+        try waitForProcessExit(
+            process,
+            output: output.fileHandleForReading,
+            diagnostics: &diagnostics,
+            deadline: deadline
+        )
+        guard process.terminationStatus == 0 else {
+            let message = String(decoding: diagnostics, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let fallback = "codex app-server exited with code \(process.terminationStatus)"
+            throw CodexRepositoryError.codexTitleUpdateFailed(message.isEmpty ? fallback : message)
+        }
+    }
+
+    private nonisolated static func writeAppServerMessage(
+        _ object: [String: Any],
+        to handle: FileHandle
+    ) throws {
+        var message = try JSONSerialization.data(withJSONObject: object)
+        message.append(0x0A)
+        try handle.write(contentsOf: message)
+    }
+
+    private nonisolated static func readAppServerResponse(
+        requestID: Int,
+        from handle: FileHandle,
+        buffer: inout Data,
+        diagnostics: inout Data,
+        deadline: UInt64
+    ) throws {
+        while let line = try readAppServerLine(from: handle, buffer: &buffer, deadline: deadline) {
+            guard let response = try? JSONDecoder().decode(AppServerResponse.self, from: line) else {
+                appendDiagnostic(line, to: &diagnostics)
+                continue
+            }
+            guard response.id == requestID else { continue }
+
+            if let error = response.error {
+                throw CodexRepositoryError.codexTitleUpdateFailed(error.message)
+            }
+            return
+        }
+        throw CodexRepositoryError.codexTitleUpdateFailed(
+            "Codex app server closed before confirming the rename."
+        )
+    }
+
+    private nonisolated static func readAppServerLine(
+        from handle: FileHandle,
+        buffer: inout Data,
+        deadline: UInt64
+    ) throws -> Data? {
+        while true {
+            if let newline = buffer.firstIndex(of: 0x0A) {
+                let line = Data(buffer[..<newline])
+                buffer.removeSubrange(...newline)
+                return line
+            }
+            try waitForReadableData(on: handle, deadline: deadline)
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else {
+                guard !buffer.isEmpty else { return nil }
+                defer { buffer.removeAll() }
+                return buffer
+            }
+            buffer.append(chunk)
+        }
+    }
+
+    private nonisolated static func waitForReadableData(
+        on handle: FileHandle,
+        deadline: UInt64
+    ) throws {
+        while true {
+            try checkTitleUpdateDeadline(deadline)
+            var descriptor = pollfd(
+                fd: handle.fileDescriptor,
+                events: Int16(POLLIN | POLLHUP),
+                revents: 0
+            )
+            let result = Darwin.poll(
+                &descriptor,
+                1,
+                pollInterval(until: deadline)
+            )
+            if result > 0 { return }
+            if result == 0 { continue }
+            if errno == EINTR { continue }
+            throw CodexRepositoryError.codexTitleUpdateFailed(
+                "Codex app server output could not be read."
+            )
+        }
+    }
+
+    private nonisolated static func waitForProcessExit(
+        _ process: Process,
+        output: FileHandle,
+        diagnostics: inout Data,
+        deadline: UInt64
+    ) throws {
+        while process.isRunning {
+            try checkTitleUpdateDeadline(deadline)
+            var descriptor = pollfd(
+                fd: output.fileDescriptor,
+                events: Int16(POLLIN | POLLHUP),
+                revents: 0
+            )
+            let result = Darwin.poll(
+                &descriptor,
+                1,
+                pollInterval(until: deadline)
+            )
+            if result > 0 {
+                let chunk = output.availableData
+                if chunk.isEmpty {
+                    Thread.sleep(forTimeInterval: 0.005)
+                } else {
+                    appendDiagnostic(chunk, to: &diagnostics)
+                }
+            } else if result < 0, errno != EINTR {
+                throw CodexRepositoryError.codexTitleUpdateFailed(
+                    "Codex app server output could not be read."
+                )
+            }
+        }
+        process.waitUntilExit()
+    }
+
+    private nonisolated static func checkTitleUpdateDeadline(_ deadline: UInt64) throws {
+        if Task.isCancelled {
+            throw CancellationError()
+        }
+        guard DispatchTime.now().uptimeNanoseconds < deadline else {
+            throw CodexRepositoryError.codexTitleUpdateFailed(
+                "Codex app server timed out while renaming the task."
+            )
+        }
+    }
+
+    private nonisolated static func pollInterval(until deadline: UInt64) -> Int32 {
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard now < deadline else { return 0 }
+        let remainingMilliseconds = (deadline - now + 999_999) / 1_000_000
+        return min(Int32(clamping: remainingMilliseconds), processPollIntervalMilliseconds)
+    }
+
+    private nonisolated static func appendDiagnostic(_ data: Data, to diagnostics: inout Data) {
+        diagnostics.append(data)
+        if diagnostics.count > maximumDiagnosticBytes {
+            diagnostics = diagnostics.suffix(maximumDiagnosticBytes)
+        }
+    }
+
+    private nonisolated static func stop(_ process: Process) {
+        let processIdentifier = process.processIdentifier
+        process.terminate()
+        let deadline = DispatchTime.now().uptimeNanoseconds + 250_000_000
+        while process.isRunning, DispatchTime.now().uptimeNanoseconds < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        if process.isRunning {
+            _ = Darwin.kill(processIdentifier, SIGKILL)
+        }
+        process.waitUntilExit()
     }
 
     public func setArchived(_ archived: Bool, taskID: String) async throws {
@@ -334,6 +631,14 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
 
         guard !kinds.isEmpty else { return [] }
 
+        let delegatedPredicate = """
+        (COALESCE(source, '') IN ('vscode', 'cli', 'appServer')
+          AND COALESCE(thread_source, '') = 'subagent'
+          AND COALESCE(agent_role, '') = ''
+          AND COALESCE(agent_nickname, '') = ''
+          AND COALESCE(agent_path, '') = ''
+          AND NOT EXISTS (SELECT 1 FROM thread_spawn_edges WHERE child_thread_id = threads.id))
+        """
         let agentPredicate = """
         (COALESCE(source, '') LIKE '%subagent%'
           OR COALESCE(thread_source, '') LIKE '%subagent%'
@@ -345,6 +650,9 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
         var kindPredicates = [
             "(source IN ('vscode', 'cli', 'appServer') AND NOT \(agentPredicate))"
         ]
+        if kinds.contains(.delegated) {
+            kindPredicates.append(delegatedPredicate)
+        }
         if kinds.contains(.agent) {
             kindPredicates.append(agentPredicate)
         }
@@ -540,6 +848,16 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving {
         reducer: RolloutEventReducer?,
         hasProject: Bool
     ) -> CodexTaskKind {
+        let isDelegated = ["vscode", "cli", "appServer"].contains {
+            row.source.caseInsensitiveCompare($0) == .orderedSame
+        }
+            && row.threadSource.caseInsensitiveCompare("subagent") == .orderedSame
+            && row.agentRole.isEmpty
+            && row.agentNickname.isEmpty
+            && row.agentPath.isEmpty
+            && row.parentThreadID == nil
+        if isDelegated { return .delegated }
+
         let isAgent = row.source.localizedCaseInsensitiveContains("subagent")
             || row.threadSource.localizedCaseInsensitiveContains("subagent")
             || !row.agentRole.isEmpty

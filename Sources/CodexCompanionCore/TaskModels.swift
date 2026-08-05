@@ -29,22 +29,32 @@ public enum AttentionStatus: String, Codable, CaseIterable, Hashable, Sendable {
 
 public enum CodexTaskKind: String, CaseIterable, Hashable, Sendable {
     case regular
+    case delegated
     case automation
     case agent
     case batch
     case unassigned
 
-    public static let defaultVisible: Set<CodexTaskKind> = [.regular, .automation]
+    public static let defaultVisible: Set<CodexTaskKind> = [.regular, .delegated, .automation]
 }
 
 public enum TaskPriority: String, CaseIterable, Hashable, Sendable {
     case none
+    case blue
+    case green
     case yellow
     case orange
     case red
 
     public var title: String {
-        self == .none ? "No flag" : "\(rawValue.capitalized) flag"
+        switch self {
+        case .none: "No flag"
+        case .blue: "Work in progress"
+        case .green: "Ready"
+        case .yellow: "Needs attention"
+        case .orange: "Important issue"
+        case .red: "Critical issue"
+        }
     }
 }
 
@@ -326,14 +336,14 @@ public enum ProjectOrdering {
 
     public static func sortingAutomatically(_ sections: [ProjectSection]) -> [ProjectSection] {
         sections.sorted { lhs, rhs in
-            if lhs.isChat != rhs.isChat {
-                return !lhs.isChat
-            }
-
-            let lhsHasRecentActivity = lhs.tasks.contains { $0.status == .working || $0.status == .finished }
-            let rhsHasRecentActivity = rhs.tasks.contains { $0.status == .working || $0.status == .finished }
+            let lhsHasRecentActivity = lhs.tasks.contains { $0.status != .inactive }
+            let rhsHasRecentActivity = rhs.tasks.contains { $0.status != .inactive }
             if lhsHasRecentActivity != rhsHasRecentActivity {
                 return lhsHasRecentActivity
+            }
+
+            if lhs.isChat != rhs.isChat {
+                return !lhs.isChat
             }
 
             let nameOrder = lhs.name.localizedStandardCompare(rhs.name)

@@ -10,7 +10,7 @@ Pin the work that matters, highlight priorities, capture observations, and add r
 
 **[Download Task Deck for Codex (.dmg) →](https://github.com/awronski/task-deck-for-codex/releases/latest/download/TaskDeckForCodex.dmg)**
 
-The ready-made app is Developer ID signed and Apple notarized. Open the DMG and drag Task Deck for Codex to Applications—no source build is required. Task Deck makes no network requests, so your task data and personal notes stay on your Mac.
+The ready-made app is Developer ID signed and Apple notarized. Open the DMG and drag Task Deck for Codex to Applications—no source build is required. Task Deck has no network client of its own, so your task data and personal notes stay on your Mac. Optional title syncing asks Codex's bundled local app server to update Codex's own task name.
 
 ## See your Codex work at a glance
 
@@ -49,7 +49,7 @@ Working, waiting, finished, and failed tasks are visible together. Expand any ta
 
 ### Keep the most important work in focus
 
-Pin important tasks to your Console and use yellow, orange, or red flags to make priorities unmistakable. Your highest-value task stays easy to find even while many other tasks continue in parallel.
+Pin important tasks to your Console, mark work in progress with a blue flag, use yellow, orange, or red flags for issues, and mark production-ready work with a green flag. Your highest-value task stays easy to find even while many other tasks continue in parallel.
 
 ### Preserve the context you do not want to lose
 
@@ -65,7 +65,7 @@ Group tasks by project, search instantly, filter by task type or status, and col
 
 ### Move from overview to action
 
-Open any task directly in Codex, start a new task inside the right project, rename tasks for clarity, or archive completed work with undo. Task Deck removes the navigation overhead between noticing something and acting on it.
+Open any task directly in Codex, start a new task inside the right project, rename tasks for clarity, optionally sync those titles back to Codex, or archive completed work with undo. Task Deck removes the navigation overhead between noticing something and acting on it.
 
 ## More useful controls
 
@@ -82,7 +82,7 @@ Open any task directly in Codex, start a new task inside the right project, rena
 
 ## Privacy and local data
 
-Task Deck for Codex makes no network requests. It accesses Codex only through local files, Codex's bundled command-line tool, and local desktop IPC.
+Task Deck for Codex has no network client of its own. It accesses Codex only through local files, Codex's bundled command-line and app-server tools, and local desktop IPC.
 
 Codex state is read locally from:
 

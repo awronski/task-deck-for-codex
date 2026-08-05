@@ -590,6 +590,8 @@ struct ReminderScheduleEditor: View {
 
 struct ProjectSectionView: View {
     let section: ProjectSection
+    let appearance: ProjectAppearance
+    let suggestedAppearance: ProjectAppearance
     let isCollapsed: Bool
     let expandedTaskIDs: Set<String>
     let allowsProjectReordering: Bool
@@ -609,34 +611,112 @@ struct ProjectSectionView: View {
     let onSetReminder: (String, String, Date) -> Bool
     let onRemoveReminder: (String) -> Void
     let onTogglePreview: (String) -> Void
+    let onSetAppearance: (ProjectAppearance) -> Void
+    let onResetAppearance: () -> Void
 
     @State private var isDropTarget = false
+    @State private var isShowingAppearancePicker = false
 
     private var accent: Color {
         section.isChat ? ConsoleTheme.teal : ConsoleTheme.color(for: section.highestPriorityStatus)
     }
 
+    private var identityColor: Color {
+        section.isChat ? ConsoleTheme.teal : ProjectAppearanceCatalog.color(for: appearance.colorID)
+    }
+
+    private var identityIconTile: some View {
+        ZStack {
+            if appearance.usesBackgroundColor {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [identityColor.opacity(0.78), identityColor.opacity(0.42)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            } else {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.white.opacity(0.045))
+            }
+
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(appearance.usesBackgroundColor ? Color.white.opacity(0.18) : ConsoleTheme.divider)
+
+            Image(systemName: appearance.iconName)
+                .consoleFont(size: 15, weight: .medium)
+                .foregroundStyle(
+                    appearance.usesBackgroundColor
+                        ? Color.white
+                        : ConsoleTheme.primaryText.opacity(0.82)
+                )
+        }
+        .frame(width: 32, height: 32)
+    }
+
+    private var headerBackground: some View {
+        ZStack {
+            if !section.isChat, appearance.usesBackgroundColor {
+                LinearGradient(
+                    stops: [
+                        .init(color: identityColor.opacity(0.30), location: 0),
+                        .init(color: identityColor.opacity(0.14), location: 0.34),
+                        .init(color: .clear, location: 0.82)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            }
+
+            if isDropTarget {
+                ConsoleTheme.blue.opacity(0.10)
+            }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(accent)
+                    .frame(width: 2, height: 22)
+                    .padding(.leading, 16)
+                    .padding(.trailing, 10)
+
+                if section.isChat {
+                    Image(systemName: "bubble.left")
+                        .consoleFont(size: 15, weight: .medium)
+                        .foregroundStyle(ConsoleTheme.teal)
+                        .frame(width: 32, height: 32)
+                } else {
+                    Button {
+                        isShowingAppearancePicker = true
+                    } label: {
+                        identityIconTile
+                    }
+                    .buttonStyle(.plain)
+                    .help("Customize \(section.name)")
+                    .accessibilityLabel("Customize \(section.name) icon and color")
+                    .popover(isPresented: $isShowingAppearancePicker, arrowEdge: .leading) {
+                        ProjectAppearancePicker(
+                            projectName: section.name,
+                            appearance: appearance,
+                            suggestedAppearance: suggestedAppearance,
+                            onChange: onSetAppearance,
+                            onReset: onResetAppearance
+                        )
+                    }
+                }
+
                 Button(action: onToggle) {
                     HStack(spacing: 0) {
-                        RoundedRectangle(cornerRadius: 1)
-                            .fill(accent)
-                            .frame(width: 2, height: 22)
-                            .padding(.trailing, 10)
-
-                        Image(systemName: section.isChat ? "bubble.left" : "folder")
-                            .consoleFont(size: 15, weight: .medium)
-                            .foregroundStyle(section.isChat ? ConsoleTheme.teal : ConsoleTheme.primaryText.opacity(0.92))
-                            .frame(width: 22)
-
                         Text(section.name)
                             .consoleFont(size: 17.5, weight: .medium)
                             .foregroundStyle(ConsoleTheme.primaryText)
                             .lineLimit(1)
                             .truncationMode(.tail)
-                            .padding(.leading, 8)
+                            .padding(.leading, 10)
 
                         if section.tasks.count > 3 {
                             Text("\(section.tasks.count)")
@@ -655,11 +735,11 @@ struct ProjectSectionView: View {
                             .foregroundStyle(ConsoleTheme.secondaryText)
                             .rotationEffect(isCollapsed ? .degrees(-90) : .zero)
                     }
-                    .padding(.leading, 16)
                     .frame(height: 44)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
                 .accessibilityLabel("\(section.name), \(section.tasks.count) tasks")
                 .accessibilityValue(isCollapsed ? "Collapsed" : "Expanded")
 
@@ -688,7 +768,7 @@ struct ProjectSectionView: View {
                         .help("Drag to reorder projects")
                         .accessibilityLabel("Drag \(section.name) to reorder projects")
                         .draggable(section.id) {
-                            Label(section.name, systemImage: "folder")
+                            Label(section.name, systemImage: appearance.iconName)
                                 .consoleFont(size: 13.5, weight: .medium)
                                 .padding(.horizontal, 12)
                                 .frame(height: 34)
@@ -698,10 +778,16 @@ struct ProjectSectionView: View {
                 }
             }
             .frame(height: 44)
-            .background(
-                isDropTarget ? ConsoleTheme.blue.opacity(0.10) : .clear,
-                in: RoundedRectangle(cornerRadius: 7)
-            )
+            .background(headerBackground)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(
+                        section.isChat || !appearance.usesBackgroundColor
+                            ? ConsoleTheme.divider
+                            : identityColor.opacity(0.76)
+                    )
+                    .frame(height: 1)
+            }
             .dropDestination(for: String.self) { projectIDs, location in
                 guard allowsProjectReordering, let sourceID = projectIDs.first else { return false }
                 return onMoveProject(sourceID, section.id, location.y > 22)
@@ -710,10 +796,6 @@ struct ProjectSectionView: View {
             }
 
             if !isCollapsed, !section.tasks.isEmpty {
-                Rectangle()
-                    .fill(ConsoleTheme.divider)
-                    .frame(height: 1)
-
                 ForEach(section.tasks) { task in
                     TaskRow(
                         task: task,
@@ -747,6 +829,7 @@ struct ProjectSectionView: View {
             ConsoleTheme.raisedSurface,
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
         )
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.white.opacity(0.12))
@@ -1445,6 +1528,8 @@ private extension TaskPriority {
     var color: Color {
         switch self {
         case .none: ConsoleTheme.secondaryText
+        case .blue: ConsoleTheme.blue
+        case .green: .green
         case .yellow: .yellow
         case .orange: .orange
         case .red: ConsoleTheme.red

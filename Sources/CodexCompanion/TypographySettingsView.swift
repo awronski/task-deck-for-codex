@@ -2,6 +2,7 @@ import SwiftUI
 
 struct TypographySettingsView: View {
     @AppStorage("automaticallySortProjects") private var automaticallySortProjects = false
+    @AppStorage("syncTaskTitlesToCodex") private var syncTaskTitlesToCodex = false
     @AppStorage("showTaskModelDetails") private var showTaskModelDetails = false
     @AppStorage("consoleFontFamily") private var fontFamily = ConsoleFontFamily.system.rawValue
     @AppStorage("consoleFontSize") private var fontSize = ConsoleFontSize.standard.rawValue
@@ -26,6 +27,17 @@ struct TypographySettingsView: View {
                         title: "Automatically sort projects",
                         description: "Bring projects with working or newly finished tasks to the top, then alphabetize each group. Task order stays unchanged.",
                         isOn: $automaticallySortProjects
+                    )
+                }
+
+                SettingsSection(
+                    title: "Codex integration",
+                    systemImage: "arrow.triangle.2.circlepath"
+                ) {
+                    SettingsToggle(
+                        title: "Rename tasks in Codex",
+                        description: "Also update Codex when you rename a task in Task Deck. Existing local titles are unchanged.",
+                        isOn: $syncTaskTitlesToCodex
                     )
                 }
 

@@ -6,6 +6,7 @@ struct AttentionConsoleView: View {
     let console: AttentionConsole
 
     @AppStorage("automaticallySortProjects") private var automaticallySortProjects = false
+    @AppStorage("syncTaskTitlesToCodex") private var syncTaskTitlesToCodex = false
 
     private enum UndoOperation: Equatable {
         case consoleRemoval
@@ -433,6 +434,7 @@ struct AttentionConsoleView: View {
     private func taskKindTitle(_ kind: CodexTaskKind) -> String {
         switch kind {
         case .regular: "Regular tasks"
+        case .delegated: "Created by other tasks"
         case .automation: "Automations"
         case .agent: "Agents"
         case .batch: "Batch CLI tasks"
@@ -443,6 +445,7 @@ struct AttentionConsoleView: View {
     private func taskKindSymbol(_ kind: CodexTaskKind) -> String {
         switch kind {
         case .regular: "person"
+        case .delegated: "arrow.triangle.branch"
         case .automation: "gearshape.2"
         case .agent: "person.2"
         case .batch: "terminal"
@@ -543,8 +546,15 @@ struct AttentionConsoleView: View {
             ScrollView {
                 LazyVStack(spacing: 16) {
                     ForEach(sections) { section in
+                        let suggestedAppearance = ProjectAppearanceCatalog.suggested(for: section)
+                        let appearance = ProjectAppearanceCatalog.resolved(
+                            console.projectAppearance(for: section.id),
+                            for: section
+                        )
                         ProjectSectionView(
                             section: section,
+                            appearance: appearance,
+                            suggestedAppearance: suggestedAppearance,
                             isCollapsed: collapsedProjects.contains(section.id),
                             expandedTaskIDs: expandedTaskIDs,
                             allowsProjectReordering: !automaticallySortProjects,
@@ -557,7 +567,13 @@ struct AttentionConsoleView: View {
                             onNewTask: { startTask(in: section) },
                             onMoveProject: moveProject,
                             onRename: { taskID, title in
-                                console.setTitle(title, for: taskID)
+                                Task {
+                                    await console.setTitle(
+                                        title,
+                                        for: taskID,
+                                        syncsToCodex: syncTaskTitlesToCodex
+                                    )
+                                }
                             },
                             onSetPriority: { taskID, priority in
                                 console.setPriority(priority, for: taskID)
@@ -571,7 +587,13 @@ struct AttentionConsoleView: View {
                                 console.setReminder(for: taskID, title: title, at: date)
                             },
                             onRemoveReminder: console.removeReminder,
-                            onTogglePreview: togglePreview
+                            onTogglePreview: togglePreview,
+                            onSetAppearance: { nextAppearance in
+                                console.setProjectAppearance(nextAppearance, for: section.id)
+                            },
+                            onResetAppearance: {
+                                console.setProjectAppearance(nil, for: section.id)
+                            }
                         )
                     }
                 }

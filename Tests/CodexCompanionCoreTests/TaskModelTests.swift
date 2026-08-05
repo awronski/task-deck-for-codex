@@ -5,8 +5,22 @@ import Testing
 @Suite
 struct TaskModelTests {
     @Test
+    func tasksCreatedByOtherTasksAreVisibleByDefault() {
+        #expect(CodexTaskKind.defaultVisible == [.regular, .delegated, .automation])
+    }
+
+    @Test
     func tasksDefaultToNoFlag() {
         #expect(task("task", project: "project", status: .inactive, date: .now).priority == .none)
+    }
+
+    @Test
+    func flagLabelsDescribeTheWorkflowState() {
+        #expect(TaskPriority.green.title == "Ready")
+        #expect(TaskPriority.blue.title == "Work in progress")
+        #expect(TaskPriority.yellow.title == "Needs attention")
+        #expect(TaskPriority.orange.title == "Important issue")
+        #expect(TaskPriority.red.title == "Critical issue")
     }
 
     @Test
@@ -183,23 +197,39 @@ struct TaskModelTests {
     }
 
     @Test
-    func automaticProjectOrderPromotesWorkingAndNewlyFinishedProjectsAlphabetically() {
+    func automaticProjectOrderKeepsEveryNonInactiveStatusInTheRecentActivityGroup() {
         let now = Date()
         let sections = TaskGrouping.sections(from: [
             task("zebra-inactive", project: "zebra", status: .inactive, date: now),
             task("bravo-finished", project: "bravo", status: .finished, date: now.addingTimeInterval(-1)),
             task("alpha-working", project: "alpha", status: .working, date: now.addingTimeInterval(-2)),
             task("delta-waiting", project: "delta", status: .waitingForInput, date: now.addingTimeInterval(-3)),
-            task("charlie-inactive", project: "charlie", status: .inactive, date: now.addingTimeInterval(-4))
+            task("echo-permission", project: "echo", status: .waitingForPermission, date: now.addingTimeInterval(-4)),
+            task("foxtrot-error", project: "foxtrot", status: .error, date: now.addingTimeInterval(-5)),
+            task("charlie-inactive", project: "charlie", status: .inactive, date: now.addingTimeInterval(-6))
         ])
 
         let ordered = ProjectOrdering.sortingAutomatically(sections)
 
-        #expect(ordered.map(\.name) == ["alpha", "bravo", "charlie", "delta", "zebra"])
+        #expect(ordered.map(\.name) == ["alpha", "bravo", "delta", "echo", "foxtrot", "charlie", "zebra"])
     }
 
     @Test
-    func automaticProjectOrderKeepsTaskOrderAndChatsLast() {
+    func automaticProjectOrderPlacesActiveChatsAfterActiveProjects() {
+        let now = Date()
+        let sections = TaskGrouping.sections(from: [
+            task("inactive", project: "client", status: .inactive, date: now),
+            task("project-working", project: "server", status: .working, date: now.addingTimeInterval(-1)),
+            task("chat-working", project: "Chats", status: .working, date: now.addingTimeInterval(-2), isChat: true)
+        ])
+
+        let ordered = ProjectOrdering.sortingAutomatically(sections)
+
+        #expect(ordered.map(\.name) == ["server", "Chats", "client"])
+    }
+
+    @Test
+    func automaticProjectOrderKeepsTaskOrderAndInactiveChatsLast() {
         let now = Date()
         let projectTasks = [
             task("inactive", project: "client", status: .inactive, date: now),
@@ -276,15 +306,16 @@ struct TaskModelTests {
         _ id: String,
         project: String,
         status: AttentionStatus,
-        date: Date
+        date: Date,
+        isChat: Bool = false
     ) -> CodexTask {
         CodexTask(
             id: id,
             title: id,
-            projectKey: "/code/\(project)",
+            projectKey: isChat ? "chats" : "/code/\(project)",
             projectName: project,
-            projectPath: "/code/\(project)",
-            isChat: false,
+            projectPath: isChat ? "/Users/test/Documents/Codex" : "/code/\(project)",
+            isChat: isChat,
             status: status,
             updatedAt: date
         )

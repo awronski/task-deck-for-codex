@@ -240,11 +240,117 @@ struct CodexTaskRepositoryTests {
     }
 
     @Test
+    func usesCodexAppServerToRenameTask() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let taskID = UUID().uuidString
+        let requestLog = fixture.root.appendingPathComponent("codex-app-server.log")
+        let codexExecutable = try fixture.writeCodexAppServerExecutable(requestLog: requestLog)
+        let repository = fixture.repository(codexExecutableURL: codexExecutable)
+
+        try await repository.setTitle("Ready \"now\"", taskID: taskID)
+
+        let lines = try String(contentsOf: requestLog, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        #expect(Array(lines.prefix(4)) == [
+            fixture.root.path,
+            "app-server",
+            "--listen",
+            "stdio://"
+        ])
+
+        try #require(lines.count >= 7)
+        let initialize = try #require(lines[4].data(using: .utf8))
+        let initialized = try #require(lines[5].data(using: .utf8))
+        let rename = try #require(lines[6].data(using: .utf8))
+        let initializeObject = try #require(
+            JSONSerialization.jsonObject(with: initialize) as? [String: Any]
+        )
+        let initializedObject = try #require(
+            JSONSerialization.jsonObject(with: initialized) as? [String: Any]
+        )
+        let renameObject = try #require(
+            JSONSerialization.jsonObject(with: rename) as? [String: Any]
+        )
+
+        #expect(initializeObject["method"] as? String == "initialize")
+        #expect(initializedObject["method"] as? String == "initialized")
+        #expect(renameObject["method"] as? String == "thread/name/set")
+        let params = try #require(renameObject["params"] as? [String: String])
+        #expect(params == ["threadId": taskID, "name": "Ready \"now\""])
+    }
+
+    @Test
+    func unresponsiveCodexAppServerTimesOutWithoutBlockingTaskLoading() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let taskID = UUID().uuidString
+        try fixture.writeCatalog(
+            projects: [(id: "project", name: "Project", path: "/Users/test/code/project")],
+            assignments: [taskID: "project"]
+        )
+        try fixture.writeDatabase(rows: [
+            .init(
+                id: taskID,
+                title: "Rename me",
+                cwd: "/Users/test/code/project",
+                rolloutPath: nil
+            )
+        ])
+        let startedMarker = fixture.root.appendingPathComponent("codex-app-server-started")
+        let codexExecutable = try fixture.writeUnresponsiveCodexAppServerExecutable(
+            startedMarker: startedMarker
+        )
+        let repository = fixture.repository(
+            codexExecutableURL: codexExecutable,
+            titleUpdateTimeout: 1
+        )
+
+        let rename = Task {
+            try await repository.setTitle("New title", taskID: taskID)
+        }
+        for _ in 0..<100 {
+            if FileManager.default.fileExists(atPath: startedMarker.path) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(FileManager.default.fileExists(atPath: startedMarker.path))
+
+        let snapshotLoadedPromptly = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                (try? await repository.loadSnapshot(including: CodexTaskKind.defaultVisible)) != nil
+            }
+            group.addTask {
+                try? await Task.sleep(for: .milliseconds(400))
+                return false
+            }
+            let firstResult = await group.next() ?? false
+            group.cancelAll()
+            return firstResult
+        }
+        #expect(snapshotLoadedPromptly)
+
+        do {
+            try await rename.value
+            Issue.record("Expected the unresponsive Codex app server to time out")
+        } catch let error as CodexRepositoryError {
+            #expect(
+                error == .codexTitleUpdateFailed(
+                    "Codex app server timed out while renaming the task."
+                )
+            )
+        }
+    }
+
+    @Test
     func loadsCatalogTasksAndClassifiesTaskKinds() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.remove() }
 
         let regularID = UUID().uuidString
+        let delegatedID = UUID().uuidString
         let automationID = UUID().uuidString
         let unassignedID = UUID().uuidString
         let agentID = UUID().uuidString
@@ -278,6 +384,13 @@ struct CodexTaskRepositoryTests {
                 )
             ]
         )
+        let delegatedRollout = try fixture.writeRollout(
+            taskID: delegatedID,
+            lines: [
+                event("session_meta", ["source": "vscode", "thread_source": "subagent"]),
+                event("event_msg", ["type": "task_started"])
+            ]
+        )
         let agentRollout = try fixture.writeRollout(
             taskID: agentID,
             lines: [
@@ -303,6 +416,7 @@ struct CodexTaskRepositoryTests {
             ],
             assignments: [
                 regularID: "one",
+                delegatedID: "one",
                 automationID: "one",
                 agentID: "one",
                 batchID: "one"
@@ -325,6 +439,13 @@ struct CodexTaskRepositoryTests {
                 rolloutPath: automationRollout.path,
                 threadSource: "automation"
             ),
+            .init(
+                id: delegatedID,
+                title: "Task created by another task",
+                cwd: "/Users/test/code/one",
+                rolloutPath: delegatedRollout.path,
+                threadSource: "subagent"
+            ),
             .init(id: unassignedID, title: "Legacy task", cwd: "/Users/test/code/one", rolloutPath: nil),
             .init(id: agentID, title: "Internal agent", cwd: "/Users/test/code/one", rolloutPath: agentRollout.path),
             .init(id: batchID, title: "Batch task", cwd: "/Users/test/code/one", rolloutPath: batchRollout.path, source: "exec")
@@ -333,23 +454,25 @@ struct CodexTaskRepositoryTests {
         let repository = fixture.repository()
         let defaultSnapshot = try await repository.loadSnapshot(including: CodexTaskKind.defaultVisible)
 
-        #expect(defaultSnapshot.tasks.map(\.id) == [regularID, automationID])
-        #expect(defaultSnapshot.tasks.map(\.kind) == [.regular, .automation])
-        #expect(defaultSnapshot.tasks.map(\.status) == [.working, .finished])
+        #expect(defaultSnapshot.tasks.map(\.id) == [regularID, automationID, delegatedID])
+        #expect(defaultSnapshot.tasks.map(\.kind) == [.regular, .automation, .delegated])
+        #expect(defaultSnapshot.tasks.map(\.status) == [.working, .finished, .working])
         #expect(defaultSnapshot.tasks.first?.modelName == "gpt-5.6-sol")
         #expect(defaultSnapshot.tasks.first?.thinkingEffort == "high")
         #expect(defaultSnapshot.tasks.last?.modelName == nil)
         #expect(defaultSnapshot.tasks.last?.thinkingEffort == nil)
         #expect(defaultSnapshot.tasks.first?.workingSince == Date(timeIntervalSince1970: 1_784_648_776))
         #expect(defaultSnapshot.tasks.first?.activity?.headline == "Reviewing the project structure.")
-        #expect(defaultSnapshot.tasks.last?.finishedAt == automationFinishedAt)
-        #expect(defaultSnapshot.tasks.last?.activity?.headline == "Automation finished successfully.")
+        let automationTask = defaultSnapshot.tasks.first { $0.id == automationID }
+        #expect(automationTask?.finishedAt == automationFinishedAt)
+        #expect(automationTask?.activity?.headline == "Automation finished successfully.")
         #expect(defaultSnapshot.projects.map(\.name) == ["Project One", "Project Two", "Chats"])
         #expect(defaultSnapshot.projects.last?.isChat == true)
 
         let completeSnapshot = try await repository.loadSnapshot(including: Set(CodexTaskKind.allCases))
         let kindsByID = Dictionary(uniqueKeysWithValues: completeSnapshot.tasks.map { ($0.id, $0.kind) })
         #expect(kindsByID[regularID] == .regular)
+        #expect(kindsByID[delegatedID] == .delegated)
         #expect(kindsByID[automationID] == .automation)
         #expect(kindsByID[unassignedID] == .unassigned)
         #expect(kindsByID[agentID] == .agent)
@@ -358,8 +481,40 @@ struct CodexTaskRepositoryTests {
 
         let agentOnly = try await repository.loadSnapshot(including: [.agent])
         #expect(agentOnly.tasks.map(\.id) == [agentID])
+        let delegatedOnly = try await repository.loadSnapshot(including: [.delegated])
+        #expect(delegatedOnly.tasks.map(\.id) == [delegatedID])
         let batchOnly = try await repository.loadSnapshot(including: [.batch])
         #expect(batchOnly.tasks.map(\.id) == [batchID])
+    }
+
+    @Test
+    func guardianSubagentsRemainBehindTheAgentsFilter() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let guardianID = UUID().uuidString
+        try fixture.writeCatalog(
+            projects: [(id: "one", name: "Project One", path: "/Users/test/code/one")],
+            assignments: [guardianID: "one"]
+        )
+        try fixture.writeDatabase(rows: [
+            .init(
+                id: guardianID,
+                title: "Internal guardian",
+                cwd: "/Users/test/code/one",
+                rolloutPath: nil,
+                source: #"{"subagent":{"other":"guardian"}}"#,
+                threadSource: "subagent"
+            )
+        ])
+
+        let repository = fixture.repository()
+        let defaultSnapshot = try await repository.loadSnapshot(including: CodexTaskKind.defaultVisible)
+        let agentSnapshot = try await repository.loadSnapshot(including: [.agent])
+
+        #expect(defaultSnapshot.tasks.isEmpty)
+        #expect(agentSnapshot.tasks.map(\.id) == [guardianID])
+        #expect(agentSnapshot.tasks.first?.kind == .agent)
     }
 
     @Test
@@ -523,11 +678,15 @@ private struct RepositoryFixture {
         try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
     }
 
-    func repository(codexExecutableURL: URL? = nil) -> CodexTaskRepository {
+    func repository(
+        codexExecutableURL: URL? = nil,
+        titleUpdateTimeout: TimeInterval = 5
+    ) -> CodexTaskRepository {
         CodexTaskRepository(
             codexHome: root,
             homeDirectory: "/Users/test",
-            codexExecutableURL: codexExecutableURL
+            codexExecutableURL: codexExecutableURL,
+            titleUpdateTimeout: titleUpdateTimeout
         )
     }
 
@@ -537,6 +696,37 @@ private struct RepositoryFixture {
         let script = """
         #!/bin/sh
         printf '%s\\n%s\\n%s\\n' "$CODEX_HOME" "$1" "$2" > '\(escapedLogPath)'
+        """
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        return executable
+    }
+
+    func writeCodexAppServerExecutable(requestLog: URL) throws -> URL {
+        let executable = root.appendingPathComponent("codex")
+        let escapedLogPath = requestLog.path.replacingOccurrences(of: "'", with: "'\\''")
+        let script = """
+        #!/bin/sh
+        IFS= read -r initialize_request
+        printf '%s\n' '{"id":1,"result":{}}'
+        IFS= read -r initialized_notification
+        IFS= read -r rename_request
+        printf '%s\n' "$CODEX_HOME" "$@" "$initialize_request" "$initialized_notification" "$rename_request" > '\(escapedLogPath)'
+        printf '%s\n' '{"id":2,"result":{}}'
+        """
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        return executable
+    }
+
+    func writeUnresponsiveCodexAppServerExecutable(startedMarker: URL) throws -> URL {
+        let executable = root.appendingPathComponent("codex")
+        let escapedMarkerPath = startedMarker.path.replacingOccurrences(of: "'", with: "'\\''")
+        let script = """
+        #!/bin/sh
+        IFS= read -r initialize_request
+        printf 'started\n' > '\(escapedMarkerPath)'
+        IFS= read -r never_sent
         """
         try Data(script.utf8).write(to: executable)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
