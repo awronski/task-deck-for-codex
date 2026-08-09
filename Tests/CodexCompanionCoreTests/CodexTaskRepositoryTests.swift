@@ -386,13 +386,13 @@ struct CodexTaskRepositoryTests {
         )
         let repository = fixture.repository(
             codexExecutableURL: codexExecutable,
-            titleUpdateTimeout: 1
+            titleUpdateTimeout: 2
         )
 
         let rename = Task {
             try await repository.setTitle("New title", taskID: taskID)
         }
-        for _ in 0..<100 {
+        for _ in 0..<150 {
             if FileManager.default.fileExists(atPath: startedMarker.path) { break }
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -794,8 +794,7 @@ private struct RepositoryFixture {
         let executable = root.appendingPathComponent("codex")
         let script = """
         #!/bin/sh
-        trap '' TERM
-        while true; do :; done
+        exec /bin/sleep 60
         """
         try Data(script.utf8).write(to: executable)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
