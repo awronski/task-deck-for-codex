@@ -48,7 +48,23 @@ enum ProjectAppearanceCatalog {
         ProjectIconChoice(id: "person.2", title: "Team"),
         ProjectIconChoice(id: "bubble.left", title: "Chat"),
         ProjectIconChoice(id: "bolt", title: "Automation"),
-        ProjectIconChoice(id: "command", title: "Command")
+        ProjectIconChoice(id: "command", title: "Command"),
+        ProjectIconChoice(id: "iphone", title: "Mobile"),
+        ProjectIconChoice(id: "desktopcomputer", title: "Desktop"),
+        ProjectIconChoice(id: "brain", title: "Artificial intelligence"),
+        ProjectIconChoice(id: "cpu", title: "Systems and embedded"),
+        ProjectIconChoice(id: "cylinder", title: "Database"),
+        ProjectIconChoice(id: "cloud", title: "Cloud"),
+        ProjectIconChoice(id: "gamecontroller", title: "Game"),
+        ProjectIconChoice(id: "paintbrush", title: "Design"),
+        ProjectIconChoice(id: "graduationcap", title: "Education"),
+        ProjectIconChoice(id: "cart", title: "Commerce"),
+        ProjectIconChoice(id: "waveform", title: "Audio"),
+        ProjectIconChoice(id: "film", title: "Video"),
+        ProjectIconChoice(id: "camera", title: "Photography"),
+        ProjectIconChoice(id: "puzzlepiece.extension", title: "Extension"),
+        ProjectIconChoice(id: "arrow.triangle.2.circlepath", title: "Continuous integration"),
+        ProjectIconChoice(id: "house", title: "Home automation")
     ]
 
     static let colorRows = [
@@ -133,7 +149,8 @@ enum ProjectAppearanceCatalog {
             iconName: iconIDs.contains(stored.iconName) ? stored.iconName : suggested.iconName,
             colorID: stored.usesBackgroundColor && colorsByID[stored.colorID] == nil
                 ? suggested.colorID
-                : stored.colorID
+                : stored.colorID,
+            displayName: stored.displayName
         )
     }
 
@@ -143,12 +160,28 @@ enum ProjectAppearanceCatalog {
         )
         let iconName: String
 
-        if !nameParts.isDisjoint(with: ["admin", "dashboard"]) {
+        if !nameParts.isDisjoint(with: ["ai", "llm", "ml"]) {
+            iconName = "brain"
+        } else if !nameParts.isDisjoint(with: ["mobile", "ios", "android"]) {
+            iconName = "iphone"
+        } else if !nameParts.isDisjoint(with: ["desktop", "macos", "windows"]) {
+            iconName = "desktopcomputer"
+        } else if !nameParts.isDisjoint(with: ["database", "db", "postgres", "sql"]) {
+            iconName = "cylinder"
+        } else if !nameParts.isDisjoint(with: ["game", "gaming"]) {
+            iconName = "gamecontroller"
+        } else if !nameParts.isDisjoint(with: ["cloud", "infra", "terraform"]) {
+            iconName = "cloud"
+        } else if !nameParts.isDisjoint(with: ["embedded", "firmware", "systems"]) {
+            iconName = "cpu"
+        } else if !nameParts.isDisjoint(with: ["admin", "dashboard"]) {
             iconName = "chart.bar"
         } else if !nameParts.isDisjoint(with: ["cli", "terminal"]) {
             iconName = "terminal"
         } else if !nameParts.isDisjoint(with: ["server", "api"]) {
             iconName = "server.rack"
+        } else if !nameParts.isDisjoint(with: ["web", "website"]) {
+            iconName = "globe"
         } else if !nameParts.isDisjoint(with: ["app", "companion"]) {
             iconName = "chevron.left.forwardslash.chevron.right"
         } else {

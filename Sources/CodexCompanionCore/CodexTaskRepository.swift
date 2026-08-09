@@ -54,6 +54,13 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
         let message: String
     }
 
+    private enum ArchiveCommandFailure: Error, Sendable {
+        case launch(String)
+        case exited(String)
+        case timedOut
+        case outputReadFailed
+    }
+
     private struct ThreadRow: Decodable {
         let id: String
         let title: String?
@@ -149,6 +156,7 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
     private let projectCatalogURL: URL
     private let homeDirectory: String
     private let titleUpdateTimeout: TimeInterval
+    private let archiveUpdateTimeout: TimeInterval
     private var cursors: [String: RolloutCursor] = [:]
     private var lastProjectCatalog: CodexProjectCatalog?
     private var threadSchema: ThreadSchema?
@@ -158,7 +166,8 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
         homeDirectory: String = NSHomeDirectory(),
         projectCatalogURL: URL? = nil,
         codexExecutableURL: URL? = nil,
-        titleUpdateTimeout: TimeInterval = 5
+        titleUpdateTimeout: TimeInterval = 5,
+        archiveUpdateTimeout: TimeInterval = 5
     ) {
         let resolvedCodexHome = codexHome
             ?? ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
@@ -173,11 +182,19 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
             ?? resolvedCodexHome.appendingPathComponent(".codex-global-state.json")
         self.homeDirectory = homeDirectory
         self.titleUpdateTimeout = max(0.1, titleUpdateTimeout)
+        self.archiveUpdateTimeout = max(0.1, archiveUpdateTimeout)
     }
 
     public func loadSnapshot(including kinds: Set<CodexTaskKind>) async throws -> CodexTaskSnapshot {
         let rows = try queryThreadRows(including: kinds)
         let projectCatalog = try loadProjectCatalog()
+        let allRows = kinds == Set(CodexTaskKind.allCases)
+            ? rows
+            : try queryThreadRows(including: Set(CodexTaskKind.allCases))
+        let newestTaskCreationDatesByProjectID = newestTaskCreationDates(
+            in: allRows,
+            projectCatalog: projectCatalog
+        )
         let sessionTitles = loadSessionTitles()
         var tasks: [CodexTask] = []
         tasks.reserveCapacity(rows.count)
@@ -185,17 +202,7 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
         for row in rows {
             guard UUID(uuidString: row.id) != nil else { continue }
 
-            let project = projectCatalog.resolve(
-                taskID: row.id,
-                path: row.cwd ?? "",
-                homeDirectory: homeDirectory
-            ) ?? row.parentThreadID.flatMap {
-                projectCatalog.resolve(
-                    taskID: $0,
-                    path: row.cwd ?? "",
-                    homeDirectory: homeDirectory
-                )
-            }
+            let project = resolveProject(for: row, using: projectCatalog)
             if project == nil, kinds.isDisjoint(with: [.delegated, .unassigned, .agent, .batch]) {
                 continue
             }
@@ -246,8 +253,41 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
 
         return CodexTaskSnapshot(
             tasks: tasks,
-            projects: projectCatalog.identities(homeDirectory: homeDirectory)
+            projects: projectCatalog.identities(homeDirectory: homeDirectory),
+            newestTaskCreationDatesByProjectID: newestTaskCreationDatesByProjectID
         )
+    }
+
+    private func newestTaskCreationDates(
+        in rows: [ThreadRow],
+        projectCatalog: CodexProjectCatalog
+    ) -> [String: Date] {
+        rows.reduce(into: [:]) { dates, row in
+            guard UUID(uuidString: row.id) != nil else { return }
+            let projectID = resolveProject(for: row, using: projectCatalog)?.key ?? "unassigned"
+            let milliseconds = row.createdAtMilliseconds > 0
+                ? row.createdAtMilliseconds
+                : row.recencyAtMilliseconds
+            let creationDate = Date(timeIntervalSince1970: Double(milliseconds) / 1_000)
+            dates[projectID] = max(dates[projectID] ?? .distantPast, creationDate)
+        }
+    }
+
+    private func resolveProject(
+        for row: ThreadRow,
+        using projectCatalog: CodexProjectCatalog
+    ) -> ProjectIdentity? {
+        projectCatalog.resolve(
+            taskID: row.id,
+            path: row.cwd ?? "",
+            homeDirectory: homeDirectory
+        ) ?? row.parentThreadID.flatMap {
+            projectCatalog.resolve(
+                taskID: $0,
+                path: row.cwd ?? "",
+                homeDirectory: homeDirectory
+            )
+        }
     }
 
     private func loadSessionTitles() -> [String: String] {
@@ -550,10 +590,78 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
             throw CodexRepositoryError.codexExecutableMissing
         }
 
+        let codexHomeURL = self.codexHomeURL
+        let socketURL = sharedAppServerSocketURL()
+        let archiveUpdateTimeout = self.archiveUpdateTimeout
+        let operation = Task.detached(priority: .userInitiated) {
+            try Self.performArchiveUpdate(
+                archived,
+                taskID: taskID,
+                codexExecutableURL: codexExecutableURL,
+                codexHomeURL: codexHomeURL,
+                socketURL: socketURL,
+                timeout: archiveUpdateTimeout
+            )
+        }
+        try await withTaskCancellationHandler {
+            try await operation.value
+        } onCancel: {
+            operation.cancel()
+        }
+
+        CodexDesktopNotifier(codexHome: codexHomeURL)
+            .notify(archived: archived, taskID: taskID)
+    }
+
+    private nonisolated static func performArchiveUpdate(
+        _ archived: Bool,
+        taskID: String,
+        codexExecutableURL: URL,
+        codexHomeURL: URL,
+        socketURL: URL?,
+        timeout: TimeInterval
+    ) throws {
+        let command = archived ? "archive" : "unarchive"
+        let directArguments = [command, taskID]
+        let arguments = socketURL.map {
+            [command, "--remote", "unix://\($0.path)", taskID]
+        } ?? directArguments
+
+        do {
+            try runArchiveCommand(
+                arguments: arguments,
+                codexExecutableURL: codexExecutableURL,
+                codexHomeURL: codexHomeURL,
+                timeout: timeout
+            )
+        } catch ArchiveCommandFailure.exited(_)
+            where socketURL.map({ !isReachableUnixSocket($0) }) == true
+        {
+            do {
+                try runArchiveCommand(
+                    arguments: directArguments,
+                    codexExecutableURL: codexExecutableURL,
+                    codexHomeURL: codexHomeURL,
+                    timeout: timeout
+                )
+            } catch let failure as ArchiveCommandFailure {
+                throw archiveRepositoryError(for: failure)
+            }
+        } catch let failure as ArchiveCommandFailure {
+            throw archiveRepositoryError(for: failure)
+        }
+    }
+
+    private nonisolated static func runArchiveCommand(
+        arguments: [String],
+        codexExecutableURL: URL,
+        codexHomeURL: URL,
+        timeout: TimeInterval
+    ) throws {
         let process = Process()
         let output = Pipe()
         process.executableURL = codexExecutableURL
-        process.arguments = [archived ? "archive" : "unarchive", taskID]
+        process.arguments = arguments
         process.environment = ProcessInfo.processInfo.environment.merging([
             "CODEX_HOME": codexHomeURL.path
         ]) { _, codexHome in codexHome }
@@ -564,20 +672,157 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
         do {
             try process.run()
         } catch {
-            throw CodexRepositoryError.codexCommandFailed(error.localizedDescription)
+            throw ArchiveCommandFailure.launch(error.localizedDescription)
         }
 
-        let commandOutput = output.fileHandleForReading.readDataToEndOfFile()
+        defer {
+            if process.isRunning {
+                stop(process)
+            }
+        }
+
+        let descriptor = output.fileHandleForReading.fileDescriptor
+        let descriptorFlags = Darwin.fcntl(descriptor, F_GETFL)
+        guard descriptorFlags >= 0,
+              Darwin.fcntl(descriptor, F_SETFL, descriptorFlags | O_NONBLOCK) == 0
+        else {
+            throw ArchiveCommandFailure.outputReadFailed
+        }
+
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + UInt64(timeout * 1_000_000_000)
+        var diagnostics = Data()
+        while process.isRunning {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            guard DispatchTime.now().uptimeNanoseconds < deadline else {
+                throw ArchiveCommandFailure.timedOut
+            }
+
+            var pollDescriptor = pollfd(
+                fd: descriptor,
+                events: Int16(POLLIN | POLLHUP),
+                revents: 0
+            )
+            let result = Darwin.poll(
+                &pollDescriptor,
+                1,
+                pollInterval(until: deadline)
+            )
+            if result > 0 {
+                try drainArchiveOutput(from: descriptor, into: &diagnostics)
+            } else if result < 0, errno != EINTR {
+                throw ArchiveCommandFailure.outputReadFailed
+            }
+        }
+
         process.waitUntilExit()
+        try drainArchiveOutput(from: descriptor, into: &diagnostics)
         guard process.terminationStatus == 0 else {
-            let message = String(decoding: commandOutput, as: UTF8.self)
+            let message = String(decoding: diagnostics, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let fallback = "codex exited with code \(process.terminationStatus)"
-            throw CodexRepositoryError.codexCommandFailed(message.isEmpty ? fallback : message)
+            throw ArchiveCommandFailure.exited(message.isEmpty ? fallback : message)
         }
+    }
 
-        CodexDesktopNotifier(codexHome: codexHomeURL)
-            .notify(archived: archived, taskID: taskID)
+    private nonisolated static func drainArchiveOutput(
+        from descriptor: Int32,
+        into diagnostics: inout Data
+    ) throws {
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        while true {
+            let count = buffer.withUnsafeMutableBytes {
+                Darwin.read(descriptor, $0.baseAddress, $0.count)
+            }
+            if count > 0 {
+                appendDiagnostic(Data(buffer.prefix(count)), to: &diagnostics)
+            } else if count == 0 || errno == EAGAIN || errno == EWOULDBLOCK {
+                return
+            } else if errno != EINTR {
+                throw ArchiveCommandFailure.outputReadFailed
+            }
+        }
+    }
+
+    private nonisolated static func archiveRepositoryError(
+        for failure: ArchiveCommandFailure
+    ) -> CodexRepositoryError {
+        switch failure {
+        case let .launch(message), let .exited(message):
+            .codexCommandFailed(message)
+        case .timedOut:
+            .codexCommandFailed("Codex command timed out while updating the task.")
+        case .outputReadFailed:
+            .codexCommandFailed("Codex command output could not be read.")
+        }
+    }
+
+    private func sharedAppServerSocketURL() -> URL? {
+        let socketURL = codexHomeURL
+            .appendingPathComponent("app-server-control", isDirectory: true)
+            .appendingPathComponent("app-server-control.sock")
+        var fileStatus = stat()
+        guard lstat(socketURL.path, &fileStatus) == 0,
+              fileStatus.st_mode & S_IFMT == S_IFSOCK,
+              Self.isReachableUnixSocket(socketURL)
+        else { return nil }
+        return socketURL
+    }
+
+    private nonisolated static func isReachableUnixSocket(_ socketURL: URL) -> Bool {
+        let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { return false }
+        defer { Darwin.close(descriptor) }
+
+        let flags = Darwin.fcntl(descriptor, F_GETFL)
+        guard flags >= 0,
+              Darwin.fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0
+        else { return false }
+
+        let pathBytes = Array(socketURL.path.utf8CString)
+        var address = sockaddr_un()
+        let pathOffset = MemoryLayout<sockaddr_un>.offset(of: \sockaddr_un.sun_path) ?? 0
+        let addressLength = pathOffset + pathBytes.count
+        guard pathBytes.count <= MemoryLayout.size(ofValue: address.sun_path),
+              addressLength <= Int(UInt8.max)
+        else { return false }
+
+        address.sun_len = UInt8(addressLength)
+        address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &address.sun_path) { destination in
+            pathBytes.withUnsafeBytes { source in
+                destination.copyBytes(from: source)
+            }
+        }
+        let connectionResult = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(descriptor, $0, socklen_t(addressLength))
+            }
+        }
+        if connectionResult == 0 || errno == EISCONN {
+            return true
+        }
+        guard errno == EINPROGRESS else { return false }
+
+        var pollDescriptor = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
+        var pollResult: Int32
+        repeat {
+            pollResult = Darwin.poll(&pollDescriptor, 1, 200)
+        } while pollResult < 0 && errno == EINTR
+        guard pollResult > 0 else { return false }
+
+        var socketError: Int32 = 0
+        var socketErrorLength = socklen_t(MemoryLayout<Int32>.size)
+        guard Darwin.getsockopt(
+            descriptor,
+            SOL_SOCKET,
+            SO_ERROR,
+            &socketError,
+            &socketErrorLength
+        ) == 0 else { return false }
+        return socketError == 0
     }
 
     private static func findCodexExecutable(homeDirectory: String) -> URL? {

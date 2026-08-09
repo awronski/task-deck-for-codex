@@ -90,7 +90,7 @@ Codex state is read locally from:
 - `~/.codex/.codex-global-state.json`
 - Session JSONL files under `~/.codex/sessions/`
 
-Archiving and undo use Codex's bundled command-line tool so Codex moves session files and updates its state consistently. Pins, title overrides, flags, notes, reminders, project order, and other Task Deck preferences are stored locally in macOS `UserDefaults`.
+Archiving and undo use Codex's bundled command-line tool so Codex moves session files and updates its state consistently. When Codex's local app-server control socket is reachable, Task Deck connects to that shared server so tasks already open in Codex can be archived without competing for their writer lock. Pins, title overrides, flags, notes, reminders, project order, and other Task Deck preferences are stored locally in macOS `UserDefaults`.
 
 ## Compatibility and unofficial status
 

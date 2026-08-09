@@ -1,3 +1,4 @@
+import Darwin
 import CodexCompanionCore
 import Foundation
 import Testing
@@ -211,7 +212,7 @@ struct CodexTaskRepositoryTests {
     }
 
     @Test
-    func usesCodexCommandToArchiveAndRestoreTask() async throws {
+    func usesCodexCommandToArchiveAndRestoreTaskWithoutSharedAppServer() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.remove() }
 
@@ -237,6 +238,85 @@ struct CodexTaskRepositoryTests {
 
         try await repository.setArchived(false, taskID: taskID)
         #expect(try String(contentsOf: commandLog, encoding: .utf8) == "\(fixture.root.path)\nunarchive\n\(taskID)\n")
+    }
+
+    @Test
+    func usesSharedAppServerToArchiveAndRestoreTask() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let taskID = UUID().uuidString
+        let commandLog = fixture.root.appendingPathComponent("codex-command.log")
+        let codexExecutable = try fixture.writeCodexExecutable(commandLog: commandLog)
+        let socket = try fixture.createAppServerControlSocket()
+        defer { Darwin.close(socket.descriptor) }
+        let repository = fixture.repository(codexExecutableURL: codexExecutable)
+
+        try await repository.setArchived(true, taskID: taskID)
+        #expect(
+            try String(contentsOf: commandLog, encoding: .utf8) == """
+            \(fixture.root.path)
+            archive
+            --remote
+            unix://\(socket.url.path)
+            \(taskID)
+
+            """
+        )
+
+        try await repository.setArchived(false, taskID: taskID)
+        #expect(
+            try String(contentsOf: commandLog, encoding: .utf8) == """
+            \(fixture.root.path)
+            unarchive
+            --remote
+            unix://\(socket.url.path)
+            \(taskID)
+
+            """
+        )
+    }
+
+    @Test
+    func staleAppServerSocketFallsBackToDirectArchiveCommand() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let taskID = UUID().uuidString
+        let commandLog = fixture.root.appendingPathComponent("codex-command.log")
+        let codexExecutable = try fixture.writeCodexExecutable(commandLog: commandLog)
+        let socket = try fixture.createAppServerControlSocket()
+        Darwin.close(socket.descriptor)
+        let repository = fixture.repository(codexExecutableURL: codexExecutable)
+
+        try await repository.setArchived(true, taskID: taskID)
+
+        #expect(
+            try String(contentsOf: commandLog, encoding: .utf8)
+                == "\(fixture.root.path)\narchive\n\(taskID)\n"
+        )
+    }
+
+    @Test
+    func archiveCommandTimesOutInsteadOfHanging() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let taskID = UUID().uuidString
+        let codexExecutable = try fixture.writeUnresponsiveArchiveExecutable()
+        let repository = fixture.repository(
+            codexExecutableURL: codexExecutable,
+            archiveUpdateTimeout: 0.1
+        )
+
+        do {
+            try await repository.setArchived(true, taskID: taskID)
+            Issue.record("Expected the archive command to time out")
+        } catch let error as CodexRepositoryError {
+            #expect(error == .codexCommandFailed("Codex command timed out while updating the task."))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
     }
 
     @Test
@@ -461,6 +541,11 @@ struct CodexTaskRepositoryTests {
         #expect(defaultSnapshot.tasks.first?.thinkingEffort == "high")
         #expect(defaultSnapshot.tasks.last?.modelName == nil)
         #expect(defaultSnapshot.tasks.last?.thinkingEffort == nil)
+        let firstProjectID = try #require(defaultSnapshot.tasks.first?.projectKey)
+        #expect(
+            defaultSnapshot.newestTaskCreationDatesByProjectID[firstProjectID]
+                == Date(timeIntervalSince1970: 1_700_000_000.005)
+        )
         #expect(defaultSnapshot.tasks.first?.workingSince == Date(timeIntervalSince1970: 1_784_648_776))
         #expect(defaultSnapshot.tasks.first?.activity?.headline == "Reviewing the project structure.")
         let automationTask = defaultSnapshot.tasks.first { $0.id == automationID }
@@ -671,22 +756,25 @@ private struct RepositoryFixture {
     let sessions: URL
 
     init() throws {
-        root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("CodexCompanionRepositoryTests", isDirectory: true)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        root = URL(
+            fileURLWithPath: "/tmp/td-\(UUID().uuidString)",
+            isDirectory: true
+        )
         sessions = root.appendingPathComponent("sessions/2026/07/22", isDirectory: true)
         try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
     }
 
     func repository(
         codexExecutableURL: URL? = nil,
-        titleUpdateTimeout: TimeInterval = 5
+        titleUpdateTimeout: TimeInterval = 5,
+        archiveUpdateTimeout: TimeInterval = 5
     ) -> CodexTaskRepository {
         CodexTaskRepository(
             codexHome: root,
             homeDirectory: "/Users/test",
             codexExecutableURL: codexExecutableURL,
-            titleUpdateTimeout: titleUpdateTimeout
+            titleUpdateTimeout: titleUpdateTimeout,
+            archiveUpdateTimeout: archiveUpdateTimeout
         )
     }
 
@@ -695,11 +783,64 @@ private struct RepositoryFixture {
         let escapedLogPath = commandLog.path.replacingOccurrences(of: "'", with: "'\\''")
         let script = """
         #!/bin/sh
-        printf '%s\\n%s\\n%s\\n' "$CODEX_HOME" "$1" "$2" > '\(escapedLogPath)'
+        printf '%s\\n' "$CODEX_HOME" "$@" > '\(escapedLogPath)'
         """
         try Data(script.utf8).write(to: executable)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         return executable
+    }
+
+    func writeUnresponsiveArchiveExecutable() throws -> URL {
+        let executable = root.appendingPathComponent("codex")
+        let script = """
+        #!/bin/sh
+        trap '' TERM
+        while true; do :; done
+        """
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        return executable
+    }
+
+    func createAppServerControlSocket() throws -> (url: URL, descriptor: Int32) {
+        let directory = root.appendingPathComponent("app-server-control", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let socketURL = directory.appendingPathComponent("app-server-control.sock")
+        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { throw FixtureError.socket(errno) }
+
+        let pathBytes = Array(socketURL.path.utf8CString)
+        var address = sockaddr_un()
+        let pathOffset = MemoryLayout<sockaddr_un>.offset(of: \sockaddr_un.sun_path) ?? 0
+        let addressLength = pathOffset + pathBytes.count
+        guard pathBytes.count <= MemoryLayout.size(ofValue: address.sun_path),
+              addressLength <= Int(UInt8.max)
+        else {
+            Darwin.close(descriptor)
+            throw FixtureError.socketPathTooLong
+        }
+
+        address.sun_len = UInt8(addressLength)
+        address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &address.sun_path) { destination in
+            pathBytes.withUnsafeBytes { source in
+                destination.copyBytes(from: source)
+            }
+        }
+        let result = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(descriptor, $0, socklen_t(addressLength))
+            }
+        }
+        guard result == 0 else {
+            Darwin.close(descriptor)
+            throw FixtureError.socket(errno)
+        }
+        guard Darwin.listen(descriptor, 8) == 0 else {
+            Darwin.close(descriptor)
+            throw FixtureError.socket(errno)
+        }
+        return (socketURL, descriptor)
     }
 
     func writeCodexAppServerExecutable(requestLog: URL) throws -> URL {
@@ -933,6 +1074,8 @@ private struct RepositoryFixture {
 
 private enum FixtureError: Error {
     case sqlite(String)
+    case socket(Int32)
+    case socketPathTooLong
 }
 
 private func event(_ type: String, _ payload: [String: Any], timestamp: String? = nil) -> String {

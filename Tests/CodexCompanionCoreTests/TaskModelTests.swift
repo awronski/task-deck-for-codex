@@ -74,18 +74,54 @@ struct TaskModelTests {
     }
 
     @Test
-    func groupingStaysProjectFirstAndPrioritizesAttentionInsideAProject() {
+    func groupingOrdersTasksByCreationDateRegardlessOfAttentionStatus() {
         let now = Date()
         let tasks = [
-            task("inactive", project: "client", status: .inactive, date: now),
-            task("working", project: "client", status: .working, date: now.addingTimeInterval(-1)),
-            task("input", project: "client", status: .waitingForInput, date: now.addingTimeInterval(-2)),
-            task("other", project: "server", status: .inactive, date: now.addingTimeInterval(-3))
+            task(
+                "old-error",
+                project: "client",
+                status: .error,
+                date: now,
+                createdAt: now.addingTimeInterval(-3)
+            ),
+            task(
+                "new-inactive",
+                project: "client",
+                status: .inactive,
+                date: now.addingTimeInterval(-3),
+                createdAt: now
+            ),
+            task(
+                "middle-working",
+                project: "client",
+                status: .working,
+                date: now.addingTimeInterval(-1),
+                createdAt: now.addingTimeInterval(-2)
+            ),
+            task("other", project: "server", status: .inactive, date: now.addingTimeInterval(-4))
         ]
 
         let sections = TaskGrouping.sections(from: tasks)
         #expect(sections.map(\.name) == ["client", "server"])
-        #expect(sections[0].tasks.map(\.id) == ["input", "working", "inactive"])
+        #expect(sections[0].tasks.map(\.id) == ["new-inactive", "middle-working", "old-error"])
+    }
+
+    @Test
+    func taskOrderDoesNotChangeWhenStatusAndUpdateDateChange() {
+        let now = Date()
+        let newerCreation = now.addingTimeInterval(-1)
+        let olderCreation = now.addingTimeInterval(-2)
+        let before = TaskGrouping.sections(from: [
+            task("newer", project: "client", status: .working, date: now, createdAt: newerCreation),
+            task("older", project: "client", status: .inactive, date: now.addingTimeInterval(-1), createdAt: olderCreation)
+        ])
+        let after = TaskGrouping.sections(from: [
+            task("newer", project: "client", status: .inactive, date: now.addingTimeInterval(-2), createdAt: newerCreation),
+            task("older", project: "client", status: .error, date: now.addingTimeInterval(1), createdAt: olderCreation)
+        ])
+
+        #expect(before[0].tasks.map(\.id) == ["newer", "older"])
+        #expect(after[0].tasks.map(\.id) == ["newer", "older"])
     }
 
     @Test
@@ -107,6 +143,28 @@ struct TaskModelTests {
 
         #expect(sections.map(\.name) == ["client"])
         #expect(sections[0].tasks.map(\.id) == ["client-working"])
+    }
+
+    @Test
+    func projectSearchMatchesDisplayNameAndOriginalName() {
+        let task = task(
+            "client-task",
+            project: "client",
+            status: .inactive,
+            date: .now
+        )
+        let displayNames = [task.projectKey: "Command Line Tools"]
+
+        #expect(TaskGrouping.sections(
+            from: [task],
+            matching: "command line",
+            projectDisplayNames: displayNames
+        ).map(\.id) == [task.projectKey])
+        #expect(TaskGrouping.sections(
+            from: [task],
+            matching: "client",
+            projectDisplayNames: displayNames
+        ).map(\.id) == [task.projectKey])
     }
 
     @Test
@@ -197,39 +255,47 @@ struct TaskModelTests {
     }
 
     @Test
-    func automaticProjectOrderKeepsEveryNonInactiveStatusInTheRecentActivityGroup() {
+    func automaticProjectOrderUsesNewestTaskCreationDateAndKeepsChatsLast() {
         let now = Date()
-        let sections = TaskGrouping.sections(from: [
-            task("zebra-inactive", project: "zebra", status: .inactive, date: now),
-            task("bravo-finished", project: "bravo", status: .finished, date: now.addingTimeInterval(-1)),
-            task("alpha-working", project: "alpha", status: .working, date: now.addingTimeInterval(-2)),
-            task("delta-waiting", project: "delta", status: .waitingForInput, date: now.addingTimeInterval(-3)),
-            task("echo-permission", project: "echo", status: .waitingForPermission, date: now.addingTimeInterval(-4)),
-            task("foxtrot-error", project: "foxtrot", status: .error, date: now.addingTimeInterval(-5)),
-            task("charlie-inactive", project: "charlie", status: .inactive, date: now.addingTimeInterval(-6))
-        ])
+        let tasks = [
+            task("zebra-error", project: "zebra", status: .error, date: now, createdAt: now.addingTimeInterval(-30)),
+            task("alpha-inactive", project: "alpha", status: .inactive, date: now.addingTimeInterval(-30), createdAt: now),
+            task("bravo-working", project: "bravo", status: .working, date: now.addingTimeInterval(-10), createdAt: now.addingTimeInterval(-20)),
+            task("chat-newest", project: "Chats", status: .working, date: now, createdAt: now.addingTimeInterval(10), isChat: true)
+        ]
+        var sections = TaskGrouping.sections(from: tasks)
+        sections.append(ProjectSection(
+            id: "/code/empty",
+            name: "empty",
+            path: "/code/empty",
+            isChat: false,
+            tasks: []
+        ))
 
-        let ordered = ProjectOrdering.sortingAutomatically(sections)
+        let ordered = ProjectOrdering.sortingAutomatically(sections, using: tasks)
 
-        #expect(ordered.map(\.name) == ["alpha", "bravo", "delta", "echo", "foxtrot", "charlie", "zebra"])
+        #expect(ordered.map(\.name) == ["alpha", "bravo", "zebra", "empty", "Chats"])
     }
 
     @Test
-    func automaticProjectOrderPlacesActiveChatsAfterActiveProjects() {
+    func automaticProjectOrderUsesUnfilteredTasksForProjectCreationDate() {
         let now = Date()
-        let sections = TaskGrouping.sections(from: [
-            task("inactive", project: "client", status: .inactive, date: now),
-            task("project-working", project: "server", status: .working, date: now.addingTimeInterval(-1)),
-            task("chat-working", project: "Chats", status: .working, date: now.addingTimeInterval(-2), isChat: true)
-        ])
+        let visibleTasks = [
+            task("alpha-visible", project: "alpha", status: .inactive, date: now, createdAt: now.addingTimeInterval(-30)),
+            task("bravo-visible", project: "bravo", status: .working, date: now, createdAt: now.addingTimeInterval(-20))
+        ]
+        let allTasks = visibleTasks + [
+            task("alpha-filtered-out", project: "alpha", status: .error, date: now, createdAt: now)
+        ]
+        let sections = TaskGrouping.sections(from: visibleTasks)
 
-        let ordered = ProjectOrdering.sortingAutomatically(sections)
+        let ordered = ProjectOrdering.sortingAutomatically(sections, using: allTasks)
 
-        #expect(ordered.map(\.name) == ["server", "Chats", "client"])
+        #expect(ordered.map(\.name) == ["alpha", "bravo"])
     }
 
     @Test
-    func automaticProjectOrderKeepsTaskOrderAndInactiveChatsLast() {
+    func automaticProjectOrderKeepsTasksNewestFirstAndEmptyChatsLast() {
         let now = Date()
         let projectTasks = [
             task("inactive", project: "client", status: .inactive, date: now),
@@ -248,10 +314,10 @@ struct TaskModelTests {
             ]
         )
 
-        let ordered = ProjectOrdering.sortingAutomatically(sections)
+        let ordered = ProjectOrdering.sortingAutomatically(sections, using: projectTasks)
 
         #expect(ordered.map(\.name) == ["client", "Chats"])
-        #expect(ordered[0].tasks.map(\.id) == ["working", "finished", "inactive"])
+        #expect(ordered[0].tasks.map(\.id) == ["inactive", "finished", "working"])
     }
 
     @Test
@@ -307,6 +373,7 @@ struct TaskModelTests {
         project: String,
         status: AttentionStatus,
         date: Date,
+        createdAt: Date? = nil,
         isChat: Bool = false
     ) -> CodexTask {
         CodexTask(
@@ -317,7 +384,8 @@ struct TaskModelTests {
             projectPath: isChat ? "/Users/test/Documents/Codex" : "/code/\(project)",
             isChat: isChat,
             status: status,
-            updatedAt: date
+            updatedAt: date,
+            createdAt: createdAt ?? date
         )
     }
 }

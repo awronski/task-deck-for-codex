@@ -6,6 +6,7 @@ import Observation
 public final class AttentionConsole {
     private var sourceTasks: [CodexTask] = []
     public private(set) var projects: [ProjectIdentity] = []
+    public private(set) var newestTaskCreationDatesByProjectID: [String: Date] = [:]
     public private(set) var lastUpdated: Date?
     public private(set) var errorMessage: String?
     public private(set) var isRefreshing = false
@@ -151,6 +152,8 @@ public final class AttentionConsole {
 
             let tasksChanged = displayedTasks != sourceTasks
             let projectsChanged = snapshot.projects != projects
+            let projectCreationDatesChanged = snapshot.newestTaskCreationDatesByProjectID
+                != newestTaskCreationDatesByProjectID
             let ledgerChanged = reconciledLedger != ledger
             let recoveredFromError = errorMessage != nil
 
@@ -164,7 +167,15 @@ public final class AttentionConsole {
             if projectsChanged {
                 projects = snapshot.projects
             }
-            if lastUpdated == nil || tasksChanged || projectsChanged || recoveredFromError {
+            if projectCreationDatesChanged {
+                newestTaskCreationDatesByProjectID = snapshot.newestTaskCreationDatesByProjectID
+            }
+            if lastUpdated == nil
+                || tasksChanged
+                || projectsChanged
+                || projectCreationDatesChanged
+                || recoveredFromError
+            {
                 lastUpdated = Date()
             }
             if recoveredFromError {

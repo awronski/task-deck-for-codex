@@ -255,6 +255,7 @@ public enum TaskGrouping {
         from tasks: [CodexTask],
         includingEmptyProjects emptyProjects: [ProjectIdentity] = [],
         matching query: String = "",
+        projectDisplayNames: [String: String] = [:],
         projectIDs: Set<String> = [],
         statuses: Set<AttentionStatus> = []
     ) -> [ProjectSection] {
@@ -265,6 +266,7 @@ public enum TaskGrouping {
             let matchesSearch = normalizedQuery.isEmpty
                 || task.title.localizedCaseInsensitiveContains(normalizedQuery)
                 || task.projectName.localizedCaseInsensitiveContains(normalizedQuery)
+                || projectDisplayNames[task.projectKey]?.localizedCaseInsensitiveContains(normalizedQuery) == true
             return matchesProject && matchesStatus && matchesSearch
         }
 
@@ -272,10 +274,10 @@ public enum TaskGrouping {
             .compactMap { key, projectTasks in
                 guard let first = projectTasks.first else { return nil }
                 let sortedTasks = projectTasks.sorted {
-                    if $0.status.sortOrder != $1.status.sortOrder {
-                        return $0.status.sortOrder < $1.status.sortOrder
+                    if $0.createdAt != $1.createdAt {
+                        return $0.createdAt > $1.createdAt
                     }
-                    return $0.updatedAt > $1.updatedAt
+                    return $0.id < $1.id
                 }
                 return ProjectSection(
                     id: key,
@@ -292,6 +294,7 @@ public enum TaskGrouping {
                 let matchesProject = projectIDs.isEmpty || projectIDs.contains(project.key)
                 let matchesSearch = normalizedQuery.isEmpty
                     || project.name.localizedCaseInsensitiveContains(normalizedQuery)
+                    || projectDisplayNames[project.key]?.localizedCaseInsensitiveContains(normalizedQuery) == true
                 guard !visibleProjectIDs.contains(project.key), matchesProject, matchesSearch else {
                     return nil
                 }
@@ -334,16 +337,37 @@ public enum ProjectOrdering {
             .map(\.element)
     }
 
-    public static func sortingAutomatically(_ sections: [ProjectSection]) -> [ProjectSection] {
-        sections.sorted { lhs, rhs in
-            let lhsHasRecentActivity = lhs.tasks.contains { $0.status != .inactive }
-            let rhsHasRecentActivity = rhs.tasks.contains { $0.status != .inactive }
-            if lhsHasRecentActivity != rhsHasRecentActivity {
-                return lhsHasRecentActivity
-            }
+    public static func sortingAutomatically(
+        _ sections: [ProjectSection],
+        using allTasks: [CodexTask]
+    ) -> [ProjectSection] {
+        let newestTaskCreationDates = allTasks.reduce(into: [String: Date]()) { dates, task in
+            dates[task.projectKey] = max(dates[task.projectKey] ?? .distantPast, task.createdAt)
+        }
 
+        return sortingAutomatically(sections, using: newestTaskCreationDates)
+    }
+
+    public static func sortingAutomatically(
+        _ sections: [ProjectSection],
+        using newestTaskCreationDates: [String: Date]
+    ) -> [ProjectSection] {
+        return sections.sorted { lhs, rhs in
             if lhs.isChat != rhs.isChat {
                 return !lhs.isChat
+            }
+
+            let lhsCreationDate = newestTaskCreationDates[lhs.id]
+            let rhsCreationDate = newestTaskCreationDates[rhs.id]
+            switch (lhsCreationDate, rhsCreationDate) {
+            case let (.some(lhsDate), .some(rhsDate)) where lhsDate != rhsDate:
+                return lhsDate > rhsDate
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            default:
+                break
             }
 
             let nameOrder = lhs.name.localizedStandardCompare(rhs.name)
@@ -394,10 +418,19 @@ public struct ProjectIdentity: Identifiable, Hashable, Sendable {
 public struct CodexTaskSnapshot: Equatable, Sendable {
     public let tasks: [CodexTask]
     public let projects: [ProjectIdentity]
+    public let newestTaskCreationDatesByProjectID: [String: Date]
 
-    public init(tasks: [CodexTask], projects: [ProjectIdentity]) {
+    public init(
+        tasks: [CodexTask],
+        projects: [ProjectIdentity],
+        newestTaskCreationDatesByProjectID: [String: Date]? = nil
+    ) {
         self.tasks = tasks
         self.projects = projects
+        self.newestTaskCreationDatesByProjectID = newestTaskCreationDatesByProjectID
+            ?? tasks.reduce(into: [:]) { dates, task in
+                dates[task.projectKey] = max(dates[task.projectKey] ?? .distantPast, task.createdAt)
+            }
     }
 }
 

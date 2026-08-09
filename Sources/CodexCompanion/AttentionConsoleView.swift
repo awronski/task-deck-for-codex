@@ -40,11 +40,15 @@ struct AttentionConsoleView: View {
             from: sourceTasks,
             includingEmptyProjects: console.projects.filter(\.isChat),
             matching: searchText,
+            projectDisplayNames: console.projectAppearances.compactMapValues(\.displayName),
             projectIDs: selectedProjectIDs,
             statuses: selectedStatuses
         )
         return automaticallySortProjects
-            ? ProjectOrdering.sortingAutomatically(groupedSections)
+            ? ProjectOrdering.sortingAutomatically(
+                groupedSections,
+                using: console.newestTaskCreationDatesByProjectID
+            )
             : ProjectOrdering.applying(console.projectOrderIDs, to: groupedSections)
     }
 
@@ -53,9 +57,13 @@ struct AttentionConsoleView: View {
             if $0.isChat != $1.isChat {
                 return !$0.isChat
             }
-            let order = $0.name.localizedStandardCompare($1.name)
+            let order = displayedName(for: $0).localizedStandardCompare(displayedName(for: $1))
             return order == .orderedSame ? $0.key < $1.key : order == .orderedAscending
         }
+    }
+
+    private func displayedName(for project: ProjectIdentity) -> String {
+        console.projectAppearance(for: project.key)?.displayName ?? project.name
     }
 
     private var availableProjectIDs: Set<String> {
@@ -330,7 +338,7 @@ struct AttentionConsoleView: View {
                     ForEach(projectOptions) { project in
                         Toggle(isOn: projectSelection(for: project.key)) {
                             Label(
-                                project.name,
+                                displayedName(for: project),
                                 systemImage: project.isChat ? "bubble.left" : "folder"
                             )
                             .lineLimit(1)
@@ -486,7 +494,7 @@ struct AttentionConsoleView: View {
             if !projects.isEmpty {
                 Divider()
                 ForEach(projects) { project in
-                    Button(project.name) {
+                    Button(displayedName(for: project)) {
                         launcher.startTask(projectPath: project.path)
                     }
                 }
@@ -546,7 +554,6 @@ struct AttentionConsoleView: View {
             ScrollView {
                 LazyVStack(spacing: 16) {
                     ForEach(sections) { section in
-                        let suggestedAppearance = ProjectAppearanceCatalog.suggested(for: section)
                         let appearance = ProjectAppearanceCatalog.resolved(
                             console.projectAppearance(for: section.id),
                             for: section
@@ -554,7 +561,6 @@ struct AttentionConsoleView: View {
                         ProjectSectionView(
                             section: section,
                             appearance: appearance,
-                            suggestedAppearance: suggestedAppearance,
                             isCollapsed: collapsedProjects.contains(section.id),
                             expandedTaskIDs: expandedTaskIDs,
                             allowsProjectReordering: !automaticallySortProjects,
@@ -590,9 +596,6 @@ struct AttentionConsoleView: View {
                             onTogglePreview: togglePreview,
                             onSetAppearance: { nextAppearance in
                                 console.setProjectAppearance(nextAppearance, for: section.id)
-                            },
-                            onResetAppearance: {
-                                console.setProjectAppearance(nil, for: section.id)
                             }
                         )
                     }

@@ -5,14 +5,17 @@ public struct ProjectAppearance: Codable, Equatable, Sendable {
 
     public let iconName: String
     public let colorID: String
+    public let displayName: String?
 
     public var usesBackgroundColor: Bool {
         colorID != Self.noBackgroundColorID
     }
 
-    public init(iconName: String, colorID: String) {
+    public init(iconName: String, colorID: String, displayName: String? = nil) {
         self.iconName = iconName
         self.colorID = colorID
+        let trimmedDisplayName = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.displayName = trimmedDisplayName?.isEmpty == false ? trimmedDisplayName : nil
     }
 }
 

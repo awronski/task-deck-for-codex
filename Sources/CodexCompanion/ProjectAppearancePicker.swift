@@ -3,39 +3,41 @@ import SwiftUI
 
 struct ProjectAppearancePicker: View {
     let projectName: String
-    let suggestedAppearance: ProjectAppearance
     let onChange: (ProjectAppearance) -> Void
-    let onReset: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var selection: ProjectAppearance
+    @State private var displayName: String
 
     init(
         projectName: String,
         appearance: ProjectAppearance,
-        suggestedAppearance: ProjectAppearance,
-        onChange: @escaping (ProjectAppearance) -> Void,
-        onReset: @escaping () -> Void
+        onChange: @escaping (ProjectAppearance) -> Void
     ) {
         self.projectName = projectName
-        self.suggestedAppearance = suggestedAppearance
         self.onChange = onChange
-        self.onReset = onReset
         _selection = State(initialValue: appearance)
+        _displayName = State(initialValue: appearance.displayName ?? projectName)
     }
 
     private let iconColumns = Array(repeating: GridItem(.fixed(38), spacing: 8), count: 6)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 7) {
                     Text("Customize project")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(ConsoleTheme.primaryText)
-                    Text(projectName)
+
+                    TextField("Project name", text: $displayName, prompt: Text(projectName))
+                        .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11.5))
-                        .foregroundStyle(ConsoleTheme.secondaryText)
+                        .onChange(of: displayName) { _, nextName in
+                            update(displayName: nextName)
+                        }
+                        .help("Change the project name shown in Task Deck")
+                        .accessibilityLabel("Displayed project name")
                 }
 
                 Spacer()
@@ -48,56 +50,25 @@ struct ProjectAppearancePicker: View {
                         : ConsoleTheme.blue)
             }
 
-            VStack(alignment: .leading, spacing: 9) {
-                sectionLabel("ICON")
-
-                LazyVGrid(columns: iconColumns, alignment: .leading, spacing: 8) {
-                    ForEach(ProjectAppearanceCatalog.icons) { icon in
-                        iconButton(icon)
-                    }
+            LazyVGrid(columns: iconColumns, alignment: .leading, spacing: 8) {
+                ForEach(ProjectAppearanceCatalog.icons) { icon in
+                    iconButton(icon)
                 }
             }
 
             Divider().overlay(ConsoleTheme.divider)
 
-            VStack(alignment: .leading, spacing: 9) {
-                sectionLabel("COLOR PALETTE")
+            noBackgroundButton
 
-                noBackgroundButton
-
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(ProjectAppearanceCatalog.colorRows.indices, id: \.self) { rowIndex in
-                        paletteRow(ProjectAppearanceCatalog.colorRows[rowIndex])
-                    }
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(ProjectAppearanceCatalog.colorRows.indices, id: \.self) { rowIndex in
+                    paletteRow(ProjectAppearanceCatalog.colorRows[rowIndex])
                 }
-            }
-
-            HStack {
-                Button("Reset to suggested") {
-                    selection = suggestedAppearance
-                    onReset()
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(ConsoleTheme.secondaryText)
-
-                Spacer()
-
-                Text("Changes are saved automatically")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(ConsoleTheme.secondaryText.opacity(0.8))
             }
         }
         .padding(16)
-        .frame(width: 344)
+        .frame(width: 312)
         .background(ConsoleTheme.background)
-    }
-
-    private func sectionLabel(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 10.5, weight: .semibold))
-            .tracking(0.45)
-            .foregroundStyle(ConsoleTheme.secondaryText)
     }
 
     private func iconButton(_ icon: ProjectIconChoice) -> some View {
@@ -203,7 +174,25 @@ struct ProjectAppearancePicker: View {
     }
 
     private func update(iconName: String, colorID: String) {
-        let next = ProjectAppearance(iconName: iconName, colorID: colorID)
+        let next = ProjectAppearance(
+            iconName: iconName,
+            colorID: colorID,
+            displayName: selection.displayName
+        )
+        save(next)
+    }
+
+    private func update(displayName: String) {
+        let trimmedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let next = ProjectAppearance(
+            iconName: selection.iconName,
+            colorID: selection.colorID,
+            displayName: trimmedDisplayName == projectName ? nil : trimmedDisplayName
+        )
+        save(next)
+    }
+
+    private func save(_ next: ProjectAppearance) {
         guard next != selection else { return }
         selection = next
         onChange(next)

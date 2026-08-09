@@ -591,7 +591,6 @@ struct ReminderScheduleEditor: View {
 struct ProjectSectionView: View {
     let section: ProjectSection
     let appearance: ProjectAppearance
-    let suggestedAppearance: ProjectAppearance
     let isCollapsed: Bool
     let expandedTaskIDs: Set<String>
     let allowsProjectReordering: Bool
@@ -612,7 +611,6 @@ struct ProjectSectionView: View {
     let onRemoveReminder: (String) -> Void
     let onTogglePreview: (String) -> Void
     let onSetAppearance: (ProjectAppearance) -> Void
-    let onResetAppearance: () -> Void
 
     @State private var isDropTarget = false
     @State private var isShowingAppearancePicker = false
@@ -623,6 +621,10 @@ struct ProjectSectionView: View {
 
     private var identityColor: Color {
         section.isChat ? ConsoleTheme.teal : ProjectAppearanceCatalog.color(for: appearance.colorID)
+    }
+
+    private var displayedProjectName: String {
+        appearance.displayName ?? section.name
     }
 
     private var identityIconTile: some View {
@@ -696,22 +698,20 @@ struct ProjectSectionView: View {
                         identityIconTile
                     }
                     .buttonStyle(.plain)
-                    .help("Customize \(section.name)")
-                    .accessibilityLabel("Customize \(section.name) icon and color")
+                    .help("Customize \(displayedProjectName)")
+                    .accessibilityLabel("Customize \(displayedProjectName) name, icon, and color")
                     .popover(isPresented: $isShowingAppearancePicker, arrowEdge: .leading) {
                         ProjectAppearancePicker(
                             projectName: section.name,
                             appearance: appearance,
-                            suggestedAppearance: suggestedAppearance,
-                            onChange: onSetAppearance,
-                            onReset: onResetAppearance
+                            onChange: onSetAppearance
                         )
                     }
                 }
 
                 Button(action: onToggle) {
                     HStack(spacing: 0) {
-                        Text(section.name)
+                        Text(displayedProjectName)
                             .consoleFont(size: 17.5, weight: .medium)
                             .foregroundStyle(ConsoleTheme.primaryText)
                             .lineLimit(1)
@@ -740,7 +740,7 @@ struct ProjectSectionView: View {
                 }
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity)
-                .accessibilityLabel("\(section.name), \(section.tasks.count) tasks")
+                .accessibilityLabel("\(displayedProjectName), \(section.tasks.count) tasks")
                 .accessibilityValue(isCollapsed ? "Collapsed" : "Expanded")
 
                 Button(action: onNewTask) {
@@ -751,8 +751,8 @@ struct ProjectSectionView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(section.isChat ? "Start a new chat" : "Start a new task in \(section.name)")
-                .accessibilityLabel(section.isChat ? "New chat" : "New task in \(section.name)")
+                .help(section.isChat ? "Start a new chat" : "Start a new task in \(displayedProjectName)")
+                .accessibilityLabel(section.isChat ? "New chat" : "New task in \(displayedProjectName)")
 
                 if section.isChat || !allowsProjectReordering {
                     Color.clear
@@ -766,9 +766,9 @@ struct ProjectSectionView: View {
                         .contentShape(Rectangle())
                         .padding(.trailing, 8)
                         .help("Drag to reorder projects")
-                        .accessibilityLabel("Drag \(section.name) to reorder projects")
+                        .accessibilityLabel("Drag \(displayedProjectName) to reorder projects")
                         .draggable(section.id) {
-                            Label(section.name, systemImage: appearance.iconName)
+                            Label(displayedProjectName, systemImage: appearance.iconName)
                                 .consoleFont(size: 13.5, weight: .medium)
                                 .padding(.horizontal, 12)
                                 .frame(height: 34)

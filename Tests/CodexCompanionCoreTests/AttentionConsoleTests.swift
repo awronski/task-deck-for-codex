@@ -195,7 +195,7 @@ struct AttentionConsoleTests {
     }
 
     @Test
-    func projectAppearancePersistsAndCanReturnToTheSuggestedDefault() {
+    func projectAppearanceAndDisplayNamePersistAndCanReturnToTheSuggestedDefault() {
         let appearances = TestProjectAppearanceStorage()
         let console = AttentionConsole(
             loader: StaticTaskLoader(tasks: []),
@@ -208,7 +208,8 @@ struct AttentionConsoleTests {
         )
         let appearance = ProjectAppearance(
             iconName: "terminal",
-            colorID: ProjectAppearance.noBackgroundColorID
+            colorID: ProjectAppearance.noBackgroundColorID,
+            displayName: "Command Line Tools"
         )
 
         let appearanceChangeWasObserved = Mutex(false)
@@ -707,6 +708,65 @@ struct AttentionConsoleTests {
     }
 
     @Test
+    func taskKindFiltersDoNotChangeAutomaticProjectCreationDates() async {
+        let now = Date()
+        let alphaRegular = codexTask(
+            "alpha-regular",
+            title: "Alpha regular",
+            projectKey: "alpha",
+            projectName: "Alpha",
+            projectPath: "/code/alpha",
+            status: .inactive,
+            createdAt: now.addingTimeInterval(-30)
+        )
+        let bravoRegular = codexTask(
+            "bravo-regular",
+            title: "Bravo regular",
+            projectKey: "bravo",
+            projectName: "Bravo",
+            projectPath: "/code/bravo",
+            status: .inactive,
+            createdAt: now.addingTimeInterval(-20)
+        )
+        let alphaAgent = codexTask(
+            "alpha-agent",
+            title: "Alpha agent",
+            projectKey: "alpha",
+            projectName: "Alpha",
+            projectPath: "/code/alpha",
+            kind: .agent,
+            status: .inactive,
+            createdAt: now
+        )
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [alphaRegular, bravoRegular, alphaAgent]),
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(ledger: VisibilityLedger(isBootstrapped: true)),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+
+        await console.refresh()
+        let datesBefore = console.newestTaskCreationDatesByProjectID
+        let sectionsBefore = TaskGrouping.sections(from: console.allTasks)
+        #expect(ProjectOrdering.sortingAutomatically(
+            sectionsBefore,
+            using: datesBefore
+        ).map(\.id) == ["alpha", "bravo"])
+
+        console.setIncludedTaskKinds(CodexTaskKind.defaultVisible.union([.agent]))
+        await console.refresh()
+
+        #expect(console.newestTaskCreationDatesByProjectID == datesBefore)
+        let sectionsAfter = TaskGrouping.sections(from: console.allTasks)
+        #expect(ProjectOrdering.sortingAutomatically(
+            sectionsAfter,
+            using: console.newestTaskCreationDatesByProjectID
+        ).map(\.id) == ["alpha", "bravo"])
+    }
+
+    @Test
     func openingFinishedTaskMakesItInactiveAndPersistsAcknowledgement() async {
         let launchedAt = Date(timeIntervalSince1970: 1_000)
         let workingTask = codexTask(
@@ -858,7 +918,10 @@ struct AttentionConsoleTests {
 private struct StaticTaskLoader: CodexTaskLoading {
     let tasks: [CodexTask]
     func loadSnapshot(including kinds: Set<CodexTaskKind>) async throws -> CodexTaskSnapshot {
-        snapshot(for: tasks.filter { kinds.contains($0.kind) })
+        snapshot(
+            for: tasks.filter { kinds.contains($0.kind) },
+            allTasks: tasks
+        )
     }
 }
 
@@ -937,7 +1000,8 @@ private func codexTask(
     thinkingEffort: String? = nil,
     updatedAt: Date = .now,
     workingSince: Date? = nil,
-    finishedAt: Date? = nil
+    finishedAt: Date? = nil,
+    createdAt: Date = .distantPast
 ) -> CodexTask {
     CodexTask(
         id: id,
@@ -953,13 +1017,18 @@ private func codexTask(
         activity: activity,
         updatedAt: updatedAt,
         workingSince: workingSince,
-        finishedAt: finishedAt
+        finishedAt: finishedAt,
+        createdAt: createdAt
     )
 }
 
-private func snapshot(for tasks: [CodexTask]) -> CodexTaskSnapshot {
+private func snapshot(
+    for tasks: [CodexTask],
+    allTasks: [CodexTask]? = nil
+) -> CodexTaskSnapshot {
+    let completeTasks = allTasks ?? tasks
     var seen: Set<String> = []
-    let projects = tasks.compactMap { task -> ProjectIdentity? in
+    let projects = completeTasks.compactMap { task -> ProjectIdentity? in
         guard seen.insert(task.projectKey).inserted else { return nil }
         return ProjectIdentity(
             key: task.projectKey,
@@ -968,7 +1037,13 @@ private func snapshot(for tasks: [CodexTask]) -> CodexTaskSnapshot {
             isChat: task.isChat
         )
     }
-    return CodexTaskSnapshot(tasks: tasks, projects: projects)
+    return CodexTaskSnapshot(
+        tasks: tasks,
+        projects: projects,
+        newestTaskCreationDatesByProjectID: completeTasks.reduce(into: [:]) { dates, task in
+            dates[task.projectKey] = max(dates[task.projectKey] ?? .distantPast, task.createdAt)
+        }
+    )
 }
 
 @MainActor
