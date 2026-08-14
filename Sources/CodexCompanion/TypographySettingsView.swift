@@ -88,6 +88,24 @@ struct TypographySettingsView: View {
                         typographyPreview
                     }
                 }
+
+                SettingsSection(
+                    title: "About",
+                    systemImage: "info.circle"
+                ) {
+                    HStack {
+                        Text("Version")
+                            .font(.system(size: 13.5, weight: .medium))
+                            .foregroundStyle(ConsoleTheme.primaryText)
+
+                        Spacer()
+
+                        Text(appVersion)
+                            .font(.system(size: 12.5, design: .monospaced))
+                            .foregroundStyle(ConsoleTheme.secondaryText)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
             }
             .padding(24)
         }
@@ -95,6 +113,11 @@ struct TypographySettingsView: View {
         .background(settingsBackground)
         .frame(width: 520)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            ?? "Development"
     }
 
     private var header: some View {

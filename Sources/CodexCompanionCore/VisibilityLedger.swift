@@ -6,19 +6,22 @@ public struct VisibilityLedger: Codable, Equatable, Sendable {
     public private(set) var monitoredTaskIDs: Set<String>
     public private(set) var hiddenTaskIDs: Set<String>
     public private(set) var acknowledgedFinishedTaskIDs: Set<String>
+    public private(set) var activeTaskIDs: Set<String>
 
     public init(
         isBootstrapped: Bool = false,
         knownTaskIDs: Set<String> = [],
         monitoredTaskIDs: Set<String> = [],
         hiddenTaskIDs: Set<String> = [],
-        acknowledgedFinishedTaskIDs: Set<String> = []
+        acknowledgedFinishedTaskIDs: Set<String> = [],
+        activeTaskIDs: Set<String> = []
     ) {
         self.isBootstrapped = isBootstrapped
         self.knownTaskIDs = knownTaskIDs
         self.monitoredTaskIDs = monitoredTaskIDs
         self.hiddenTaskIDs = hiddenTaskIDs
         self.acknowledgedFinishedTaskIDs = acknowledgedFinishedTaskIDs
+        self.activeTaskIDs = activeTaskIDs
     }
 
     public mutating func reconcile(with tasks: [CodexTask]) {
@@ -34,13 +37,12 @@ public struct VisibilityLedger: Codable, Equatable, Sendable {
 
     public mutating func reconcileMembership(with tasks: [CodexTask]) {
         let availableIDs = Set(tasks.map(\.id))
-        let hiddenIDs = hiddenTaskIDs
+        let currentActiveIDs = Set(tasks.lazy.filter(\.status.isActive).map(\.id))
 
         if !isBootstrapped {
             knownTaskIDs.formUnion(availableIDs)
-            monitoredTaskIDs.formUnion(
-                tasks.lazy.filter { $0.status.isActive }.map(\.id).filter { !hiddenIDs.contains($0) }
-            )
+            monitoredTaskIDs.formUnion(currentActiveIDs.subtracting(hiddenTaskIDs))
+            activeTaskIDs = currentActiveIDs
             isBootstrapped = true
             return
         }
@@ -49,10 +51,10 @@ public struct VisibilityLedger: Codable, Equatable, Sendable {
         monitoredTaskIDs.formUnion(newTaskIDs.subtracting(hiddenTaskIDs))
         knownTaskIDs.formUnion(availableIDs)
 
-        let newlyActiveIDs = tasks.lazy
-            .filter { $0.status.isActive && !hiddenIDs.contains($0.id) }
-            .map(\.id)
-        monitoredTaskIDs.formUnion(newlyActiveIDs)
+        let reactivatedTaskIDs = currentActiveIDs.subtracting(activeTaskIDs)
+        hiddenTaskIDs.subtract(reactivatedTaskIDs)
+        monitoredTaskIDs.formUnion(reactivatedTaskIDs)
+        activeTaskIDs = currentActiveIDs
     }
 
     public mutating func hide(taskID: String) {
@@ -85,6 +87,7 @@ public struct VisibilityLedger: Codable, Equatable, Sendable {
         case monitoredTaskIDs
         case hiddenTaskIDs
         case acknowledgedFinishedTaskIDs
+        case activeTaskIDs
     }
 
     public init(from decoder: Decoder) throws {
@@ -97,6 +100,7 @@ public struct VisibilityLedger: Codable, Equatable, Sendable {
             Set<String>.self,
             forKey: .acknowledgedFinishedTaskIDs
         ) ?? []
+        activeTaskIDs = try container.decodeIfPresent(Set<String>.self, forKey: .activeTaskIDs) ?? []
     }
 
 }

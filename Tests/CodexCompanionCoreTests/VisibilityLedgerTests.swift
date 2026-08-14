@@ -32,7 +32,7 @@ struct VisibilityLedgerTests {
     }
 
     @Test
-    func hiddenTaskNeverReturnsWhenItBecomesActive() {
+    func hiddenActiveTaskReturnsOnlyAfterItStartsWorkingAgain() {
         var ledger = VisibilityLedger()
         ledger.reconcile(with: [task("task", status: .working)])
         ledger.hide(taskID: "task")
@@ -40,6 +40,25 @@ struct VisibilityLedgerTests {
 
         #expect(!ledger.isMonitored("task"))
         #expect(ledger.hiddenTaskIDs.contains("task"))
+
+        ledger.reconcile(with: [task("task", status: .inactive)])
+        #expect(!ledger.isMonitored("task"))
+
+        ledger.reconcile(with: [task("task", status: .working)])
+        #expect(ledger.isMonitored("task"))
+        #expect(!ledger.hiddenTaskIDs.contains("task"))
+    }
+
+    @Test
+    func hiddenInactiveTaskReturnsWhenItStartsWorking() {
+        var ledger = VisibilityLedger()
+        ledger.reconcile(with: [task("task", status: .inactive)])
+        ledger.hide(taskID: "task")
+
+        ledger.reconcile(with: [task("task", status: .working)])
+
+        #expect(ledger.isMonitored("task"))
+        #expect(!ledger.hiddenTaskIDs.contains("task"))
     }
 
     @Test
@@ -105,6 +124,7 @@ struct VisibilityLedgerTests {
 
         #expect(ledger.isMonitored("task"))
         #expect(!ledger.isFinishedAcknowledged("task"))
+        #expect(ledger.activeTaskIDs.isEmpty)
     }
 
     private func task(_ id: String, status: AttentionStatus) -> CodexTask {
