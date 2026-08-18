@@ -1,3 +1,4 @@
+import ServiceManagement
 import SwiftUI
 
 struct TypographySettingsView: View {
@@ -6,6 +7,8 @@ struct TypographySettingsView: View {
     @AppStorage("showTaskModelDetails") private var showTaskModelDetails = false
     @AppStorage("consoleFontFamily") private var fontFamily = ConsoleFontFamily.system.rawValue
     @AppStorage("consoleFontSize") private var fontSize = ConsoleFontSize.standard.rawValue
+    @State private var launchAtLogin = false
+    @State private var loginItemErrorMessage: String?
 
     private var typography: ConsoleTypography {
         ConsoleTypography(
@@ -18,6 +21,17 @@ struct TypographySettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 header
+
+                SettingsSection(
+                    title: "General",
+                    systemImage: "gearshape"
+                ) {
+                    SettingsToggle(
+                        title: "Start at login",
+                        description: "Open Task Deck automatically when you log in to your Mac.",
+                        isOn: launchAtLoginBinding
+                    )
+                }
 
                 SettingsSection(
                     title: "Organization",
@@ -113,6 +127,54 @@ struct TypographySettingsView: View {
         .background(settingsBackground)
         .frame(width: 520)
         .fixedSize(horizontal: false, vertical: true)
+        .onAppear(perform: refreshLaunchAtLogin)
+        .alert(
+            "Couldn’t Change Login Setting",
+            isPresented: Binding(
+                get: { loginItemErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        loginItemErrorMessage = nil
+                    }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(loginItemErrorMessage ?? "Please try again.")
+        }
+    }
+
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { launchAtLogin },
+            set: { isEnabled in
+                updateLaunchAtLogin(isEnabled)
+            }
+        )
+    }
+
+    private func refreshLaunchAtLogin() {
+        launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    private func updateLaunchAtLogin(_ isEnabled: Bool) {
+        do {
+            if isEnabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+
+            refreshLaunchAtLogin()
+
+            if isEnabled, SMAppService.mainApp.status == .requiresApproval {
+                loginItemErrorMessage = "Allow Task Deck in System Settings > General > Login Items."
+            }
+        } catch {
+            refreshLaunchAtLogin()
+            loginItemErrorMessage = error.localizedDescription
+        }
     }
 
     private var appVersion: String {
