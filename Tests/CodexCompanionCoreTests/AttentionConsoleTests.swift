@@ -8,8 +8,9 @@ import Testing
 @MainActor
 struct AttentionConsoleTests {
     @Test
-    func exposesWhetherAnAvailableTaskIsActuallyOnTheConsole() {
+    func exposesWhetherAnAvailableTaskIsActuallyOnTheConsole() async {
         let historical = "historical"
+        let task = codexTask(historical, title: "Historical", status: .inactive)
         let storage = TestVisibilityStorage(
             ledger: VisibilityLedger(
                 isBootstrapped: true,
@@ -19,13 +20,14 @@ struct AttentionConsoleTests {
             )
         )
         let console = AttentionConsole(
-            loader: StaticTaskLoader(tasks: []),
+            loader: StaticTaskLoader(tasks: [task]),
             archiver: TestTaskArchiver(),
             storage: storage,
             titleStorage: TestTaskTitleStorage(),
             priorityStorage: TestTaskPriorityStorage(),
             projectOrderStorage: TestProjectOrderStorage()
         )
+        await console.refresh()
 
         #expect(!console.isMonitored(historical))
 
@@ -513,14 +515,279 @@ struct AttentionConsoleTests {
             projectOrderStorage: TestProjectOrderStorage()
         )
         await console.refresh()
+        console.enable(task.id)
 
-        #expect(await console.setArchived(true, for: task.id))
+        #expect(await console.setArchived(true, for: task.id) == .completed)
         #expect(console.allTasks.isEmpty)
+        #expect(!console.isMonitored(task.id))
         #expect(await archiver.isArchived(task.id))
 
-        #expect(await console.setArchived(false, for: task.id))
+        #expect(await console.setArchived(false, for: task.id) == .completed)
         #expect(console.allTasks.map(\.id) == [task.id])
+        #expect(console.isMonitored(task.id))
         #expect(await !archiver.isArchived(task.id))
+    }
+
+    @Test
+    func archiveAndUndoPreserveAnUnmonitoredTask() async {
+        let task = codexTask(
+            "task",
+            title: "Unmonitored task",
+            status: .inactive
+        )
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [task]),
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await console.refresh()
+        #expect(!console.isMonitored(task.id))
+
+        #expect(await console.setArchived(true, for: task.id) == .completed)
+        #expect(console.allTasks.isEmpty)
+
+        #expect(await console.setArchived(false, for: task.id) == .completed)
+        #expect(console.allTasks.map(\.id) == [task.id])
+        #expect(!console.isMonitored(task.id))
+    }
+
+    @Test
+    func deferredArchiveRemovesTheTaskFromTheConsoleAndCanBeCancelled() async {
+        let task = codexTask(
+            "task",
+            title: "Task owned by Codex",
+            status: .inactive
+        )
+        let archiver = DeferredTestTaskArchiver()
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [task]),
+            archiver: archiver,
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await console.refresh()
+        console.enable(task.id)
+
+        #expect(await console.setArchived(true, for: task.id) == .deferred)
+        #expect(console.allTasks.map(\.id) == [task.id])
+        #expect(console.monitoredTasks.isEmpty)
+        #expect(!console.isMonitored(task.id))
+        #expect(console.pendingArchiveTaskIDs == [task.id])
+
+        #expect(await console.setArchived(false, for: task.id) == .completed)
+        #expect(console.allTasks.map(\.id) == [task.id])
+        #expect(console.monitoredTasks.map(\.id) == [task.id])
+        #expect(console.isMonitored(task.id))
+        #expect(console.pendingArchiveTaskIDs.isEmpty)
+    }
+
+    @Test
+    func cancellingADeferredArchivePreservesAnUnmonitoredTask() async {
+        let task = codexTask(
+            "task",
+            title: "Unmonitored queued task",
+            status: .inactive
+        )
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [task]),
+            archiver: DeferredTestTaskArchiver(),
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await console.refresh()
+        #expect(!console.isMonitored(task.id))
+
+        #expect(await console.setArchived(true, for: task.id) == .deferred)
+        #expect(!console.isMonitored(task.id))
+
+        #expect(await console.setArchived(false, for: task.id) == .completed)
+        #expect(!console.isMonitored(task.id))
+        #expect(console.pendingArchiveTaskIDs.isEmpty)
+    }
+
+    @Test
+    func refreshRestoresPersistedPendingArchiveState() async {
+        let task = codexTask(
+            "task",
+            title: "Queued before relaunch",
+            status: .inactive
+        )
+        let visibility = TestVisibilityStorage(
+            ledger: VisibilityLedger(
+                isBootstrapped: true,
+                knownTaskIDs: [task.id],
+                monitoredTaskIDs: [task.id]
+            )
+        )
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [task]),
+            archiver: DeferredTestTaskArchiver(pendingTaskIDs: [task.id]),
+            storage: visibility,
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+
+        await console.refresh()
+
+        #expect(console.allTasks.map(\.id) == [task.id])
+        #expect(console.monitoredTasks.isEmpty)
+        #expect(!console.isMonitored(task.id))
+        #expect(console.pendingArchiveTaskIDs == [task.id])
+    }
+
+    @Test
+    func pendingArchiveIsCancelledAndTaskRestoredWhenItStartsWorkingAgain() async {
+        let inactiveTask = codexTask(
+            "task",
+            title: "Queued task",
+            status: .inactive
+        )
+        let workingTask = codexTask(
+            inactiveTask.id,
+            title: inactiveTask.title,
+            status: .working
+        )
+        let archiver = DeferredTestTaskArchiver(pendingTaskIDs: [inactiveTask.id])
+        let console = AttentionConsole(
+            loader: SequenceTaskLoader(taskSets: [[inactiveTask], [workingTask]]),
+            archiver: archiver,
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+
+        await console.refresh()
+        #expect(console.monitoredTasks.isEmpty)
+        #expect(console.pendingArchiveTaskIDs == [inactiveTask.id])
+
+        await console.refresh()
+
+        #expect(console.monitoredTasks.map(\.id) == [workingTask.id])
+        #expect(console.isMonitored(workingTask.id))
+        #expect(console.pendingArchiveTaskIDs.isEmpty)
+        #expect(await archiver.pendingArchiveTaskIDs().isEmpty)
+    }
+
+    @Test
+    func pendingArchiveRemainsQueuedWhenTheTaskWasAlreadyActive() async {
+        let task = codexTask(
+            "task",
+            title: "Already active task",
+            status: .working
+        )
+        let archiver = DeferredTestTaskArchiver()
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [task]),
+            archiver: archiver,
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await console.refresh()
+        #expect(console.isMonitored(task.id))
+
+        #expect(await console.setArchived(true, for: task.id) == .deferred)
+        #expect(await archiver.pendingArchiveTaskIDs() == [task.id])
+        await console.refresh()
+
+        #expect(console.pendingArchiveTaskIDs == [task.id])
+        #expect(await archiver.pendingArchiveTaskIDs() == [task.id])
+        #expect(console.monitoredTasks.isEmpty)
+    }
+
+    @Test
+    func successfulRetryImmediatelyClearsPendingStateAndReloadsTasks() async {
+        let task = codexTask(
+            "task",
+            title: "Task archived by retry",
+            status: .inactive
+        )
+        let archiver = RetryCompletingTaskArchiver(pendingTaskIDs: [task.id])
+        let console = AttentionConsole(
+            loader: SequenceTaskLoader(taskSets: [[task], []]),
+            archiver: archiver,
+            storage: TestVisibilityStorage(ledger: VisibilityLedger(isBootstrapped: true)),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+
+        await console.refresh()
+
+        #expect(console.pendingArchiveTaskIDs.isEmpty)
+        #expect(console.allTasks.isEmpty)
+        #expect(await archiver.pendingArchiveTaskIDs().isEmpty)
+    }
+
+    @Test
+    func pendingArchiveIsCancelledWhenAnExcludedTaskKindStartsWorking() async {
+        let task = codexTask(
+            "agent",
+            title: "Queued agent",
+            kind: .agent,
+            status: .working
+        )
+        let archiver = DeferredTestTaskArchiver(pendingTaskIDs: [task.id])
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [task]),
+            archiver: archiver,
+            storage: TestVisibilityStorage(ledger: VisibilityLedger(isBootstrapped: true)),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+
+        await console.refresh()
+
+        #expect(console.allTasks.isEmpty)
+        #expect(console.pendingArchiveTaskIDs.isEmpty)
+        #expect(await archiver.pendingArchiveTaskIDs().isEmpty)
+    }
+
+    @Test
+    func failedRefreshDoesNotRetryPendingArchives() async {
+        let archiver = RetryRecordingTaskArchiver()
+        let console = AttentionConsole(
+            loader: FailingTaskLoader(),
+            archiver: archiver,
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+
+        await console.refresh()
+
+        #expect(await archiver.retryAttempts == 0)
+        #expect(console.errorMessage == "Could not reload tasks")
+    }
+
+    @Test
+    func retryFailureIsShownAfterASuccessfulRefresh() async {
+        let archiver = RetryRecordingTaskArchiver(error: TestArchiveRetryError())
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: []),
+            archiver: archiver,
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+
+        await console.refresh()
+
+        #expect(await archiver.retryAttempts == 1)
+        #expect(console.errorMessage == "Could not retry queued archive")
     }
 
     @Test
@@ -534,7 +801,7 @@ struct AttentionConsoleTests {
             projectOrderStorage: TestProjectOrderStorage()
         )
 
-        #expect(await console.setArchived(false, for: "task"))
+        #expect(await console.setArchived(false, for: "task") == .completed)
         #expect(console.errorMessage == "Could not reload tasks")
     }
 
@@ -708,7 +975,7 @@ struct AttentionConsoleTests {
     }
 
     @Test
-    func taskKindFiltersDoNotChangeAutomaticProjectCreationDates() async {
+    func hiddenAgentTasksDoNotAffectAutomaticProjectOrder() async {
         let now = Date()
         let alphaRegular = codexTask(
             "alpha-regular",
@@ -717,6 +984,7 @@ struct AttentionConsoleTests {
             projectName: "Alpha",
             projectPath: "/code/alpha",
             status: .inactive,
+            updatedAt: now.addingTimeInterval(-30),
             createdAt: now.addingTimeInterval(-30)
         )
         let bravoRegular = codexTask(
@@ -726,6 +994,7 @@ struct AttentionConsoleTests {
             projectName: "Bravo",
             projectPath: "/code/bravo",
             status: .inactive,
+            updatedAt: now.addingTimeInterval(-20),
             createdAt: now.addingTimeInterval(-20)
         )
         let alphaAgent = codexTask(
@@ -736,6 +1005,7 @@ struct AttentionConsoleTests {
             projectPath: "/code/alpha",
             kind: .agent,
             status: .inactive,
+            updatedAt: now,
             createdAt: now
         )
         let console = AttentionConsole(
@@ -748,21 +1018,19 @@ struct AttentionConsoleTests {
         )
 
         await console.refresh()
-        let datesBefore = console.newestTaskCreationDatesByProjectID
         let sectionsBefore = TaskGrouping.sections(from: console.allTasks)
         #expect(ProjectOrdering.sortingAutomatically(
             sectionsBefore,
-            using: datesBefore
-        ).map(\.id) == ["alpha", "bravo"])
+            using: console.allTasks
+        ).map(\.id) == ["bravo", "alpha"])
 
         console.setIncludedTaskKinds(CodexTaskKind.defaultVisible.union([.agent]))
         await console.refresh()
 
-        #expect(console.newestTaskCreationDatesByProjectID == datesBefore)
         let sectionsAfter = TaskGrouping.sections(from: console.allTasks)
         #expect(ProjectOrdering.sortingAutomatically(
             sectionsAfter,
-            using: console.newestTaskCreationDatesByProjectID
+            using: console.allTasks
         ).map(\.id) == ["alpha", "bravo"])
     }
 
@@ -943,25 +1211,109 @@ private actor SequenceTaskLoader: CodexTaskLoading {
     }
 
     func loadSnapshot(including kinds: Set<CodexTaskKind>) async throws -> CodexTaskSnapshot {
-        guard taskSets.count > 1 else { return snapshot(for: taskSets.first ?? []) }
-        return snapshot(for: taskSets.removeFirst())
+        let tasks = taskSets.count > 1 ? taskSets.removeFirst() : taskSets.first ?? []
+        return snapshot(
+            for: tasks.filter { kinds.contains($0.kind) },
+            allTasks: tasks
+        )
     }
 }
 
 private actor TestTaskArchiver: CodexTaskArchiving {
     private var archivedTaskIDs: Set<String> = []
 
-    func setArchived(_ archived: Bool, taskID: String) async throws {
+    func setArchived(
+        _ archived: Bool,
+        taskID: String
+    ) async throws -> CodexTaskArchiveResult {
         if archived {
             archivedTaskIDs.insert(taskID)
         } else {
             archivedTaskIDs.remove(taskID)
         }
+        return .completed
     }
 
     func isArchived(_ taskID: String) -> Bool {
         archivedTaskIDs.contains(taskID)
     }
+}
+
+private actor DeferredTestTaskArchiver: CodexTaskArchiving {
+    private var pendingTaskIDs: Set<String>
+
+    init(pendingTaskIDs: Set<String> = []) {
+        self.pendingTaskIDs = pendingTaskIDs
+    }
+
+    func setArchived(
+        _ archived: Bool,
+        taskID: String
+    ) -> CodexTaskArchiveResult {
+        if archived {
+            pendingTaskIDs.insert(taskID)
+            return .deferred
+        }
+        pendingTaskIDs.remove(taskID)
+        return .completed
+    }
+
+    func pendingArchiveTaskIDs() async -> Set<String> {
+        pendingTaskIDs
+    }
+}
+
+private actor RetryRecordingTaskArchiver: CodexTaskArchiving {
+    private(set) var retryAttempts = 0
+    private let error: (any Error)?
+
+    init(error: (any Error)? = nil) {
+        self.error = error
+    }
+
+    func setArchived(
+        _ archived: Bool,
+        taskID: String
+    ) -> CodexTaskArchiveResult {
+        .completed
+    }
+
+    func retryPendingArchives() throws {
+        retryAttempts += 1
+        if let error { throw error }
+    }
+}
+
+private actor RetryCompletingTaskArchiver: CodexTaskArchiving {
+    private var pendingTaskIDs: Set<String>
+
+    init(pendingTaskIDs: Set<String>) {
+        self.pendingTaskIDs = pendingTaskIDs
+    }
+
+    func setArchived(
+        _ archived: Bool,
+        taskID: String
+    ) -> CodexTaskArchiveResult {
+        if archived {
+            pendingTaskIDs.insert(taskID)
+            return .deferred
+        }
+        pendingTaskIDs.remove(taskID)
+        return .completed
+    }
+
+    func retryPendingArchives() {
+        pendingTaskIDs.removeAll()
+    }
+
+    func pendingArchiveTaskIDs() async -> Set<String> {
+        pendingTaskIDs
+    }
+}
+
+private struct TestArchiveRetryError: LocalizedError {
+    var errorDescription: String? { "Could not retry queued archive" }
 }
 
 private actor TestTaskRenamer: CodexTaskRenaming {
@@ -1039,10 +1391,7 @@ private func snapshot(
     }
     return CodexTaskSnapshot(
         tasks: tasks,
-        projects: projects,
-        newestTaskCreationDatesByProjectID: completeTasks.reduce(into: [:]) { dates, task in
-            dates[task.projectKey] = max(dates[task.projectKey] ?? .distantPast, task.createdAt)
-        }
+        projects: projects
     )
 }
 

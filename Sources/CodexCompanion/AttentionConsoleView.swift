@@ -11,6 +11,7 @@ struct AttentionConsoleView: View {
     private enum UndoOperation: Equatable {
         case consoleRemoval
         case archive
+        case queuedArchive
     }
 
     private struct UndoNotice {
@@ -47,7 +48,7 @@ struct AttentionConsoleView: View {
         return automaticallySortProjects
             ? ProjectOrdering.sortingAutomatically(
                 groupedSections,
-                using: console.newestTaskCreationDatesByProjectID
+                using: console.allTasks
             )
             : ProjectOrdering.applying(console.projectOrderIDs, to: groupedSections)
     }
@@ -552,7 +553,7 @@ struct AttentionConsoleView: View {
             emptyState
         } else {
             ScrollView {
-                LazyVStack(spacing: 16) {
+                VStack(spacing: 16) {
                     ForEach(sections) { section in
                         let appearance = ProjectAppearanceCatalog.resolved(
                             console.projectAppearance(for: section.id),
@@ -565,6 +566,7 @@ struct AttentionConsoleView: View {
                             expandedTaskIDs: expandedTaskIDs,
                             allowsProjectReordering: !automaticallySortProjects,
                             isTaskMonitored: console.isMonitored,
+                            isArchivePending: console.pendingArchiveTaskIDs.contains,
                             onToggle: { toggle(section.id) },
                             onOpen: open,
                             onHide: removeFromConsole,
@@ -629,14 +631,17 @@ struct AttentionConsoleView: View {
     }
 
     private func undoBar(for notice: UndoNotice) -> some View {
-        let isArchive = notice.operation == .archive
+        let isArchive = notice.operation != .consoleRemoval
+        let isQueuedArchive = notice.operation == .queuedArchive
 
         return HStack(spacing: 8) {
             Image(systemName: isArchive ? "archivebox" : "pin.slash")
                 .foregroundStyle(ConsoleTheme.secondaryText)
                 .accessibilityHidden(true)
 
-            Text("\(isArchive ? "Archived" : "Removed") \(notice.title)")
+            Text(
+                "\(isQueuedArchive ? "Archive queued" : (isArchive ? "Archived" : "Removed")) \(notice.title)"
+            )
                 .foregroundStyle(ConsoleTheme.primaryText)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -743,11 +748,21 @@ struct AttentionConsoleView: View {
 
     private func archive(_ task: CodexTask) {
         Task { @MainActor in
-            guard await console.setArchived(true, for: task.id) else { return }
+            if console.pendingArchiveTaskIDs.contains(task.id) {
+                guard await console.setArchived(false, for: task.id) != nil else { return }
+                if let notice = undoNotice,
+                   notice.taskID == task.id,
+                   notice.operation == .queuedArchive
+                {
+                    clearUndoNotice(notice)
+                }
+                return
+            }
+            guard let result = await console.setArchived(true, for: task.id) else { return }
             showUndoNotice(UndoNotice(
                 taskID: task.id,
                 title: task.title,
-                operation: .archive,
+                operation: result == .deferred ? .queuedArchive : .archive,
                 token: UUID()
             ))
         }
@@ -758,7 +773,7 @@ struct AttentionConsoleView: View {
         case .consoleRemoval:
             console.enable(notice.taskID)
             clearUndoNotice(notice)
-        case .archive:
+        case .archive, .queuedArchive:
             guard undoNotice?.token == notice.token else { return }
             let pendingNotice = UndoNotice(
                 taskID: notice.taskID,
@@ -768,7 +783,7 @@ struct AttentionConsoleView: View {
             )
             undoNotice = pendingNotice
             Task { @MainActor in
-                guard await console.setArchived(false, for: notice.taskID) else { return }
+                guard await console.setArchived(false, for: notice.taskID) != nil else { return }
                 clearUndoNotice(pendingNotice)
             }
         }

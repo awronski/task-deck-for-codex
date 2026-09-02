@@ -39,7 +39,7 @@ struct TypographySettingsView: View {
                 ) {
                     SettingsToggle(
                         title: "Automatically sort projects",
-                        description: "Order projects by when their newest task was created. Tasks are always ordered newest first.",
+                        description: "Show active work first, then order projects and tasks by their most recent interaction.",
                         isOn: $automaticallySortProjects
                     )
                 }

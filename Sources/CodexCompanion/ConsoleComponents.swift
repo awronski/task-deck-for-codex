@@ -595,6 +595,7 @@ struct ProjectSectionView: View {
     let expandedTaskIDs: Set<String>
     let allowsProjectReordering: Bool
     let isTaskMonitored: (String) -> Bool
+    let isArchivePending: (String) -> Bool
     let onToggle: () -> Void
     let onOpen: (CodexTask) -> Void
     let onHide: (CodexTask) -> Void
@@ -801,6 +802,7 @@ struct ProjectSectionView: View {
                         task: task,
                         isPreviewExpanded: expandedTaskIDs.contains(task.id),
                         isMonitored: isTaskMonitored(task.id),
+                        isArchivePending: isArchivePending(task.id),
                         onOpen: { onOpen(task) },
                         onHide: { onHide(task) },
                         onEnable: { onEnable(task) },
@@ -841,6 +843,7 @@ private struct TaskRow: View {
     let task: CodexTask
     let isPreviewExpanded: Bool
     let isMonitored: Bool
+    let isArchivePending: Bool
     let onOpen: () -> Void
     let onHide: () -> Void
     let onEnable: () -> Void
@@ -1071,16 +1074,18 @@ private struct TaskRow: View {
 
     private var archiveButton: some View {
         Button(action: onArchive) {
-            Image(systemName: "archivebox")
+            Image(systemName: isArchivePending ? "clock" : "archivebox")
                 .consoleFont(size: 13.5, weight: .medium)
-                .foregroundStyle(ConsoleTheme.secondaryText)
+                .foregroundStyle(isArchivePending ? ConsoleTheme.blue : ConsoleTheme.secondaryText)
                 .frame(width: 27, height: 28)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .padding(.leading, 4)
-        .help("Archive task")
-        .accessibilityLabel("Archive \(task.title)")
+        .help(isArchivePending ? "Cancel queued archive" : "Archive task")
+        .accessibilityLabel(
+            isArchivePending ? "Cancel queued archive of \(task.title)" : "Archive \(task.title)"
+        )
     }
 
     private var flagPickerButton: some View {

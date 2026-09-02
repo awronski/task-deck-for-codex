@@ -341,41 +341,45 @@ public enum ProjectOrdering {
         _ sections: [ProjectSection],
         using allTasks: [CodexTask]
     ) -> [ProjectSection] {
-        let newestTaskCreationDates = allTasks.reduce(into: [String: Date]()) { dates, task in
-            dates[task.projectKey] = max(dates[task.projectKey] ?? .distantPast, task.createdAt)
+        let activeProjectIDs = Set(
+            allTasks.lazy.filter(\.status.isActive).map(\.projectKey)
+        )
+        let mostRecentInteractions = allTasks.reduce(into: [String: Date]()) { dates, task in
+            dates[task.projectKey] = max(dates[task.projectKey] ?? .distantPast, task.updatedAt)
         }
+        return sections
+            .sorted { lhs, rhs in
+                let lhsIsActive = activeProjectIDs.contains(lhs.id)
+                let rhsIsActive = activeProjectIDs.contains(rhs.id)
+                if lhsIsActive != rhsIsActive {
+                    return lhsIsActive
+                }
 
-        return sortingAutomatically(sections, using: newestTaskCreationDates)
-    }
-
-    public static func sortingAutomatically(
-        _ sections: [ProjectSection],
-        using newestTaskCreationDates: [String: Date]
-    ) -> [ProjectSection] {
-        return sections.sorted { lhs, rhs in
-            if lhs.isChat != rhs.isChat {
-                return !lhs.isChat
+                let lhsInteraction = mostRecentInteractions[lhs.id] ?? .distantPast
+                let rhsInteraction = mostRecentInteractions[rhs.id] ?? .distantPast
+                if lhsInteraction != rhsInteraction {
+                    return lhsInteraction > rhsInteraction
+                }
+                return lhs.id < rhs.id
             }
-
-            let lhsCreationDate = newestTaskCreationDates[lhs.id]
-            let rhsCreationDate = newestTaskCreationDates[rhs.id]
-            switch (lhsCreationDate, rhsCreationDate) {
-            case let (.some(lhsDate), .some(rhsDate)) where lhsDate != rhsDate:
-                return lhsDate > rhsDate
-            case (.some, .none):
-                return true
-            case (.none, .some):
-                return false
-            default:
-                break
+            .map { section in
+                let sortedTasks = section.tasks.sorted { lhs, rhs in
+                    if lhs.status.isActive != rhs.status.isActive {
+                        return lhs.status.isActive
+                    }
+                    if lhs.updatedAt != rhs.updatedAt {
+                        return lhs.updatedAt > rhs.updatedAt
+                    }
+                    return lhs.id < rhs.id
+                }
+                return ProjectSection(
+                    id: section.id,
+                    name: section.name,
+                    path: section.path,
+                    isChat: section.isChat,
+                    tasks: sortedTasks
+                )
             }
-
-            let nameOrder = lhs.name.localizedStandardCompare(rhs.name)
-            if nameOrder != .orderedSame {
-                return nameOrder == .orderedAscending
-            }
-            return lhs.id < rhs.id
-        }
     }
 
     public static func moving(
@@ -418,19 +422,13 @@ public struct ProjectIdentity: Identifiable, Hashable, Sendable {
 public struct CodexTaskSnapshot: Equatable, Sendable {
     public let tasks: [CodexTask]
     public let projects: [ProjectIdentity]
-    public let newestTaskCreationDatesByProjectID: [String: Date]
 
     public init(
         tasks: [CodexTask],
-        projects: [ProjectIdentity],
-        newestTaskCreationDatesByProjectID: [String: Date]? = nil
+        projects: [ProjectIdentity]
     ) {
         self.tasks = tasks
         self.projects = projects
-        self.newestTaskCreationDatesByProjectID = newestTaskCreationDatesByProjectID
-            ?? tasks.reduce(into: [:]) { dates, task in
-                dates[task.projectKey] = max(dates[task.projectKey] ?? .distantPast, task.createdAt)
-            }
     }
 }
 

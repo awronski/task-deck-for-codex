@@ -5,8 +5,24 @@ public protocol CodexTaskLoading: Sendable {
     func loadSnapshot(including kinds: Set<CodexTaskKind>) async throws -> CodexTaskSnapshot
 }
 
+public enum CodexTaskArchiveResult: Equatable, Sendable {
+    case completed
+    case deferred
+}
+
 public protocol CodexTaskArchiving: Sendable {
-    func setArchived(_ archived: Bool, taskID: String) async throws
+    func setArchived(_ archived: Bool, taskID: String) async throws -> CodexTaskArchiveResult
+    func retryPendingArchives() async throws
+    func pendingArchiveTaskIDs() async -> Set<String>
+}
+
+public protocol CodexTaskArchiveStateReading: Sendable {
+    func isTaskUnarchived(_ taskID: String) async throws -> Bool
+}
+
+public extension CodexTaskArchiving {
+    func retryPendingArchives() async throws {}
+    func pendingArchiveTaskIDs() async -> Set<String> { [] }
 }
 
 public protocol CodexTaskRenaming: Sendable {
@@ -19,6 +35,7 @@ public enum CodexRepositoryError: LocalizedError, Equatable {
     case sqliteFailed(String)
     case codexExecutableMissing
     case codexCommandFailed(String)
+    case codexTaskHasActiveWriter
     case codexTitleUpdateFailed(String)
     case invalidDatabaseResponse
     case invalidProjectCatalog
@@ -31,6 +48,7 @@ public enum CodexRepositoryError: LocalizedError, Equatable {
         case let .sqliteFailed(message): "Could not access Codex tasks: \(message)"
         case .codexExecutableMissing: "Codex could not be found. Reinstall or update the Codex app."
         case let .codexCommandFailed(message): "Codex could not update the task's archive state: \(message)"
+        case .codexTaskHasActiveWriter: "Another Codex client currently owns this task."
         case let .codexTitleUpdateFailed(message): "Codex could not rename the task: \(message)"
         case .invalidDatabaseResponse: "Codex returned an unreadable task list."
         case .invalidProjectCatalog: "Codex returned an unreadable project list."
@@ -39,7 +57,12 @@ public enum CodexRepositoryError: LocalizedError, Equatable {
     }
 }
 
-public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTaskRenaming {
+public actor CodexTaskRepository:
+    CodexTaskLoading,
+    CodexTaskArchiving,
+    CodexTaskArchiveStateReading,
+    CodexTaskRenaming
+{
     private struct AppServerError: Decodable {
         let message: String
     }
@@ -47,6 +70,10 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
     private struct AppServerResponse: Decodable {
         let id: Int?
         let error: AppServerError?
+    }
+
+    private struct UnarchivedTaskRow: Decodable {
+        let id: String
     }
 
     private struct SQLiteFailure: Error {
@@ -188,19 +215,16 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
     public func loadSnapshot(including kinds: Set<CodexTaskKind>) async throws -> CodexTaskSnapshot {
         let rows = try queryThreadRows(including: kinds)
         let projectCatalog = try loadProjectCatalog()
-        let allRows = kinds == Set(CodexTaskKind.allCases)
-            ? rows
-            : try queryThreadRows(including: Set(CodexTaskKind.allCases))
-        let newestTaskCreationDatesByProjectID = newestTaskCreationDates(
-            in: allRows,
-            projectCatalog: projectCatalog
-        )
         let sessionTitles = loadSessionTitles()
         var tasks: [CodexTask] = []
         tasks.reserveCapacity(rows.count)
 
         for row in rows {
             guard UUID(uuidString: row.id) != nil else { continue }
+            let rawTitle = sessionTitles[row.id] ?? row.title ?? ""
+            guard !rawTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
 
             let project = resolveProject(for: row, using: projectCatalog)
             if project == nil, kinds.isDisjoint(with: [.delegated, .unassigned, .agent, .batch]) {
@@ -231,7 +255,7 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
                 CodexTask(
                     id: row.id,
                     title: TaskText.cleanTitle(
-                        sessionTitles[row.id] ?? row.title ?? "",
+                        rawTitle,
                         fallbackID: row.id
                     ),
                     projectKey: resolvedProject.key,
@@ -253,24 +277,8 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
 
         return CodexTaskSnapshot(
             tasks: tasks,
-            projects: projectCatalog.identities(homeDirectory: homeDirectory),
-            newestTaskCreationDatesByProjectID: newestTaskCreationDatesByProjectID
+            projects: projectCatalog.identities(homeDirectory: homeDirectory)
         )
-    }
-
-    private func newestTaskCreationDates(
-        in rows: [ThreadRow],
-        projectCatalog: CodexProjectCatalog
-    ) -> [String: Date] {
-        rows.reduce(into: [:]) { dates, row in
-            guard UUID(uuidString: row.id) != nil else { return }
-            let projectID = resolveProject(for: row, using: projectCatalog)?.key ?? "unassigned"
-            let milliseconds = row.createdAtMilliseconds > 0
-                ? row.createdAtMilliseconds
-                : row.recencyAtMilliseconds
-            let creationDate = Date(timeIntervalSince1970: Double(milliseconds) / 1_000)
-            dates[projectID] = max(dates[projectID] ?? .distantPast, creationDate)
-        }
     }
 
     private func resolveProject(
@@ -580,7 +588,10 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
         process.waitUntilExit()
     }
 
-    public func setArchived(_ archived: Bool, taskID: String) async throws {
+    public func setArchived(
+        _ archived: Bool,
+        taskID: String
+    ) async throws -> CodexTaskArchiveResult {
         guard UUID(uuidString: taskID) != nil else {
             throw CodexRepositoryError.invalidTaskID(taskID)
         }
@@ -611,6 +622,30 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
 
         CodexDesktopNotifier(codexHome: codexHomeURL)
             .notify(archived: archived, taskID: taskID)
+        return .completed
+    }
+
+    public func isTaskUnarchived(_ taskID: String) async throws -> Bool {
+        guard UUID(uuidString: taskID) != nil else {
+            throw CodexRepositoryError.invalidTaskID(taskID)
+        }
+        guard FileManager.default.fileExists(atPath: databaseURL.path) else {
+            throw CodexRepositoryError.databaseMissing(databaseURL.path)
+        }
+
+        let output: Data
+        do {
+            output = try runDatabaseQuery(
+                "SELECT id FROM threads WHERE id = '\(taskID)' AND archived = 0 LIMIT 1"
+            )
+        } catch let failure as SQLiteFailure {
+            throw CodexRepositoryError.sqliteFailed(failure.message)
+        }
+        guard !output.isEmpty else { return false }
+        guard let rows = try? JSONDecoder().decode([UnarchivedTaskRow].self, from: output) else {
+            throw CodexRepositoryError.invalidDatabaseResponse
+        }
+        return !rows.isEmpty
     }
 
     private nonisolated static func performArchiveUpdate(
@@ -750,6 +785,10 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
         for failure: ArchiveCommandFailure
     ) -> CodexRepositoryError {
         switch failure {
+        case let .exited(message) where message.localizedCaseInsensitiveContains(
+            "already has an active writer"
+        ):
+            .codexTaskHasActiveWriter
         case let .launch(message), let .exited(message):
             .codexCommandFailed(message)
         case .timedOut:
@@ -914,7 +953,12 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
         let query = """
         SELECT
             id,
-            COALESCE(NULLIF(title, ''), NULLIF(first_user_message, ''), NULLIF(preview, ''), '') AS title,
+            COALESCE(
+                NULLIF(TRIM(title), ''),
+                NULLIF(TRIM(first_user_message), ''),
+                NULLIF(TRIM(preview), ''),
+                ''
+            ) AS title,
             cwd,
             rollout_path,
             COALESCE(source, '') AS source,
@@ -933,7 +977,6 @@ public actor CodexTaskRepository: CodexTaskLoading, CodexTaskArchiving, CodexTas
         FROM threads
         WHERE archived = 0
           AND (\(kindPredicate))
-          AND (TRIM(title) <> '' OR TRIM(first_user_message) <> '' OR TRIM(preview) <> '')
         ORDER BY recency_at_ms DESC
         """
 

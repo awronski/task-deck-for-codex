@@ -118,6 +118,18 @@ struct VisibilityLedgerTests {
     }
 
     @Test
+    func optionalObservedTaskContributesToActiveTransitionTrackingOnly() {
+        var ledger = VisibilityLedger(isBootstrapped: true)
+        let agent = task("agent", status: .working)
+
+        ledger.reconcileMembership(with: [], observing: [agent])
+
+        #expect(ledger.activeTaskIDs == [agent.id])
+        #expect(!ledger.isMonitored(agent.id))
+        #expect(!ledger.knownTaskIDs.contains(agent.id))
+    }
+
+    @Test
     func olderSavedLedgerDecodesWithoutFinishedAcknowledgements() throws {
         let data = Data(#"{"isBootstrapped":true,"knownTaskIDs":["task"],"monitoredTaskIDs":["task"],"hiddenTaskIDs":[]}"#.utf8)
         let ledger = try JSONDecoder().decode(VisibilityLedger.self, from: data)

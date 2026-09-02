@@ -17,6 +17,10 @@ struct TaskDeckForCodexApp: App {
         }
 
         let repository = CodexTaskRepository()
+        let archiver = CodexArchiveCoordinator(
+            primaryArchiver: repository,
+            archiveStateReader: repository
+        )
         let storage = UserDefaultsVisibilityStorage()
         let titleStorage = UserDefaultsTaskTitleStorage()
         let priorityStorage = UserDefaultsTaskPriorityStorage()
@@ -27,7 +31,7 @@ struct TaskDeckForCodexApp: App {
         _console = State(
             initialValue: AttentionConsole(
                 loader: repository,
-                archiver: repository,
+                archiver: archiver,
                 storage: storage,
                 titleStorage: titleStorage,
                 priorityStorage: priorityStorage,

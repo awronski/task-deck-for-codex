@@ -233,11 +233,75 @@ struct CodexTaskRepositoryTests {
         let codexExecutable = try fixture.writeCodexExecutable(commandLog: commandLog)
         let repository = fixture.repository(codexExecutableURL: codexExecutable)
 
-        try await repository.setArchived(true, taskID: taskID)
+        #expect(try await repository.setArchived(true, taskID: taskID) == .completed)
         #expect(try String(contentsOf: commandLog, encoding: .utf8) == "\(fixture.root.path)\narchive\n\(taskID)\n")
 
-        try await repository.setArchived(false, taskID: taskID)
+        #expect(try await repository.setArchived(false, taskID: taskID) == .completed)
         #expect(try String(contentsOf: commandLog, encoding: .utf8) == "\(fixture.root.path)\nunarchive\n\(taskID)\n")
+    }
+
+    @Test
+    func identifiesAnActiveWriterConflict() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let taskID = UUID().uuidString
+        let codexExecutable = try fixture.writeFailingArchiveExecutable(
+            message: "Error: failed to archive session: thread \(taskID) already has an active writer"
+        )
+        let repository = fixture.repository(codexExecutableURL: codexExecutable)
+
+        do {
+            _ = try await repository.setArchived(true, taskID: taskID)
+            Issue.record("Expected the owner conflict")
+        } catch let error as CodexRepositoryError {
+            #expect(error == .codexTaskHasActiveWriter)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test
+    func preservesGenericArchiveFailuresInsteadOfTreatingThemAsOwnerConflicts() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let taskID = UUID().uuidString
+        let message = "Error: failed to archive session"
+        let codexExecutable = try fixture.writeFailingArchiveExecutable(message: message)
+        let repository = fixture.repository(codexExecutableURL: codexExecutable)
+
+        do {
+            _ = try await repository.setArchived(true, taskID: taskID)
+            Issue.record("Expected the archive failure")
+        } catch let error as CodexRepositoryError {
+            #expect(error == .codexCommandFailed(message))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test
+    func readsWhetherATaskStillNeedsArchiving() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let taskID = UUID().uuidString
+        try fixture.writeDatabase(rows: [
+            .init(
+                id: taskID,
+                title: "Archive state",
+                cwd: "/Users/test/code/project",
+                rolloutPath: nil
+            )
+        ])
+        let repository = fixture.repository()
+
+        #expect(try await repository.isTaskUnarchived(taskID))
+
+        try fixture.setDatabaseArchived(true, taskID: taskID)
+
+        #expect(try await !repository.isTaskUnarchived(taskID))
     }
 
     @Test
@@ -252,7 +316,7 @@ struct CodexTaskRepositoryTests {
         defer { Darwin.close(socket.descriptor) }
         let repository = fixture.repository(codexExecutableURL: codexExecutable)
 
-        try await repository.setArchived(true, taskID: taskID)
+        #expect(try await repository.setArchived(true, taskID: taskID) == .completed)
         #expect(
             try String(contentsOf: commandLog, encoding: .utf8) == """
             \(fixture.root.path)
@@ -264,7 +328,7 @@ struct CodexTaskRepositoryTests {
             """
         )
 
-        try await repository.setArchived(false, taskID: taskID)
+        #expect(try await repository.setArchived(false, taskID: taskID) == .completed)
         #expect(
             try String(contentsOf: commandLog, encoding: .utf8) == """
             \(fixture.root.path)
@@ -285,11 +349,11 @@ struct CodexTaskRepositoryTests {
         let taskID = UUID().uuidString
         let commandLog = fixture.root.appendingPathComponent("codex-command.log")
         let codexExecutable = try fixture.writeCodexExecutable(commandLog: commandLog)
-        let socket = try fixture.createAppServerControlSocket()
+        let socket = try fixture.createAppServerControlSocket(isListening: false)
         Darwin.close(socket.descriptor)
         let repository = fixture.repository(codexExecutableURL: codexExecutable)
 
-        try await repository.setArchived(true, taskID: taskID)
+        #expect(try await repository.setArchived(true, taskID: taskID) == .completed)
 
         #expect(
             try String(contentsOf: commandLog, encoding: .utf8)
@@ -310,7 +374,7 @@ struct CodexTaskRepositoryTests {
         )
 
         do {
-            try await repository.setArchived(true, taskID: taskID)
+            _ = try await repository.setArchived(true, taskID: taskID)
             Issue.record("Expected the archive command to time out")
         } catch let error as CodexRepositoryError {
             #expect(error == .codexCommandFailed("Codex command timed out while updating the task."))
@@ -541,11 +605,6 @@ struct CodexTaskRepositoryTests {
         #expect(defaultSnapshot.tasks.first?.thinkingEffort == "high")
         #expect(defaultSnapshot.tasks.last?.modelName == nil)
         #expect(defaultSnapshot.tasks.last?.thinkingEffort == nil)
-        let firstProjectID = try #require(defaultSnapshot.tasks.first?.projectKey)
-        #expect(
-            defaultSnapshot.newestTaskCreationDatesByProjectID[firstProjectID]
-                == Date(timeIntervalSince1970: 1_700_000_000.005)
-        )
         #expect(defaultSnapshot.tasks.first?.workingSince == Date(timeIntervalSince1970: 1_784_648_776))
         #expect(defaultSnapshot.tasks.first?.activity?.headline == "Reviewing the project structure.")
         let automationTask = defaultSnapshot.tasks.first { $0.id == automationID }
@@ -629,6 +688,88 @@ struct CodexTaskRepositoryTests {
         )
 
         #expect(snapshot.tasks.first?.title == "Trace check-aniadb-replica SSH job")
+    }
+
+    @Test
+    func loadsAutomationNamedOnlyInSessionIndexAndSkipsUnnamedTask() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let automationID = UUID().uuidString
+        let unnamedID = UUID().uuidString
+        try fixture.writeCatalog(
+            projects: [(id: "cli", name: "cli", path: "/Users/test/code/cli")],
+            assignments: [automationID: "cli", unnamedID: "cli"]
+        )
+        try fixture.writeDatabase(rows: [
+            .init(
+                id: automationID,
+                title: "",
+                cwd: "/Users/test/code/cli",
+                rolloutPath: nil,
+                threadSource: "automation"
+            ),
+            .init(
+                id: unnamedID,
+                title: "",
+                cwd: "/Users/test/code/cli",
+                rolloutPath: nil,
+                threadSource: "automation"
+            )
+        ])
+        try fixture.writeSessionIndex(entries: [
+            (id: automationID, title: "Weekly AdSense earnings diagnostic")
+        ])
+
+        let snapshot = try await fixture.repository().loadSnapshot(
+            including: CodexTaskKind.defaultVisible
+        )
+
+        #expect(snapshot.tasks.map(\.id) == [automationID])
+        #expect(snapshot.tasks.first?.title == "Weekly AdSense earnings diagnostic")
+        #expect(snapshot.tasks.first?.kind == .automation)
+    }
+
+    @Test
+    func blankTitlesFallBackToTheNextMeaningfulSource() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+
+        let blankIndexID = UUID().uuidString
+        let whitespaceDatabaseID = UUID().uuidString
+        try fixture.writeCatalog(
+            projects: [(id: "cli", name: "cli", path: "/Users/test/code/cli")],
+            assignments: [blankIndexID: "cli", whitespaceDatabaseID: "cli"]
+        )
+        try fixture.writeDatabase(rows: [
+            .init(
+                id: blankIndexID,
+                title: "Database title",
+                cwd: "/Users/test/code/cli",
+                rolloutPath: nil
+            ),
+            .init(
+                id: whitespaceDatabaseID,
+                title: "   ",
+                cwd: "/Users/test/code/cli",
+                rolloutPath: nil
+            )
+        ])
+        try fixture.setDatabaseFallbackTitle(
+            "First user message",
+            taskID: whitespaceDatabaseID
+        )
+        try fixture.writeSessionIndex(entries: [
+            (id: blankIndexID, title: "  \n ")
+        ])
+
+        let snapshot = try await fixture.repository().loadSnapshot(
+            including: CodexTaskKind.defaultVisible
+        )
+        let titlesByID = Dictionary(uniqueKeysWithValues: snapshot.tasks.map { ($0.id, $0.title) })
+
+        #expect(titlesByID[blankIndexID] == "Database title")
+        #expect(titlesByID[whitespaceDatabaseID] == "First user message")
     }
 
     @Test
@@ -801,7 +942,22 @@ private struct RepositoryFixture {
         return executable
     }
 
-    func createAppServerControlSocket() throws -> (url: URL, descriptor: Int32) {
+    func writeFailingArchiveExecutable(message: String) throws -> URL {
+        let executable = root.appendingPathComponent("codex")
+        let escapedMessage = message.replacingOccurrences(of: "'", with: "'\\''")
+        let script = """
+        #!/bin/sh
+        printf '%s\n' '\(escapedMessage)' >&2
+        exit 1
+        """
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        return executable
+    }
+
+    func createAppServerControlSocket(
+        isListening: Bool = true
+    ) throws -> (url: URL, descriptor: Int32) {
         let directory = root.appendingPathComponent("app-server-control", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let socketURL = directory.appendingPathComponent("app-server-control.sock")
@@ -835,9 +991,11 @@ private struct RepositoryFixture {
             Darwin.close(descriptor)
             throw FixtureError.socket(errno)
         }
-        guard Darwin.listen(descriptor, 8) == 0 else {
-            Darwin.close(descriptor)
-            throw FixtureError.socket(errno)
+        if isListening {
+            guard Darwin.listen(descriptor, 8) == 0 else {
+                Darwin.close(descriptor)
+                throw FixtureError.socket(errno)
+            }
         }
         return (socketURL, descriptor)
     }
@@ -990,6 +1148,18 @@ private struct RepositoryFixture {
             SET model = '\(sql(modelName))', reasoning_effort = '\(sql(thinkingEffort))'
             WHERE id = '\(sql(taskID))'
             """
+        )
+    }
+
+    func setDatabaseArchived(_ archived: Bool, taskID: String) throws {
+        try executeSQL(
+            "UPDATE threads SET archived = \(archived ? 1 : 0) WHERE id = '\(sql(taskID))'"
+        )
+    }
+
+    func setDatabaseFallbackTitle(_ title: String, taskID: String) throws {
+        try executeSQL(
+            "UPDATE threads SET first_user_message = '\(sql(title))' WHERE id = '\(sql(taskID))'"
         )
     }
 

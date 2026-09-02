@@ -6,13 +6,13 @@ import Observation
 public final class AttentionConsole {
     private var sourceTasks: [CodexTask] = []
     public private(set) var projects: [ProjectIdentity] = []
-    public private(set) var newestTaskCreationDatesByProjectID: [String: Date] = [:]
     public private(set) var lastUpdated: Date?
     public private(set) var errorMessage: String?
     public private(set) var isRefreshing = false
     public private(set) var triggeredReminders: [TaskReminder] = []
     public private(set) var missedReminders: [TaskReminder] = []
     public private(set) var reminderSoundSequence = 0
+    public private(set) var pendingArchiveTaskIDs: Set<String> = []
 
     @ObservationIgnored private let loader: any CodexTaskLoading
     @ObservationIgnored private let archiver: any CodexTaskArchiving
@@ -75,11 +75,15 @@ public final class AttentionConsole {
     }
 
     public var monitoredTasks: [CodexTask] {
-        allTasks.filter { ledger.isMonitored($0.id) }
+        allTasks.filter {
+            !pendingArchiveTaskIDs.contains($0.id) && ledger.isMonitored($0.id)
+        }
     }
 
     public func isMonitored(_ taskID: String) -> Bool {
-        ledger.isMonitored(taskID)
+        sourceTasks.contains { $0.id == taskID }
+            && !pendingArchiveTaskIDs.contains(taskID)
+            && ledger.isMonitored(taskID)
     }
 
     public func start() {
@@ -133,16 +137,45 @@ public final class AttentionConsole {
 
         do {
             let requestedKinds = includedTaskKinds
-            let loadedKinds = ledger.isBootstrapped
+            var latestPendingArchiveTaskIDs = await archiver.pendingArchiveTaskIDs()
+            var loadedKinds = ledger.isBootstrapped
                 ? requestedKinds
                 : requestedKinds.union(CodexTaskKind.defaultVisible)
-            let snapshot = try await loader.loadSnapshot(including: loadedKinds)
-            let loadedTasks = snapshot.tasks
+            if !latestPendingArchiveTaskIDs.isEmpty {
+                loadedKinds.formUnion(CodexTaskKind.allCases)
+            }
+            var snapshot = try await loader.loadSnapshot(including: loadedKinds)
+            var loadedTasks = snapshot.tasks
+            let newlyActiveTaskIDs = Set(
+                loadedTasks.lazy.filter(\.status.isActive).map(\.id)
+            ).subtracting(ledger.activeTaskIDs)
+            let resumedPendingArchiveTaskIDs = latestPendingArchiveTaskIDs.intersection(
+                newlyActiveTaskIDs
+            )
+            for taskID in resumedPendingArchiveTaskIDs {
+                _ = try await archiver.setArchived(false, taskID: taskID)
+            }
+            latestPendingArchiveTaskIDs = await archiver.pendingArchiveTaskIDs()
+
+            let pendingArchiveTaskIDsBeforeRetry = latestPendingArchiveTaskIDs
+            var retryError: (any Error)?
+            do {
+                try await archiver.retryPendingArchives()
+            } catch {
+                retryError = error
+            }
+            latestPendingArchiveTaskIDs = await archiver.pendingArchiveTaskIDs()
+            if latestPendingArchiveTaskIDs != pendingArchiveTaskIDsBeforeRetry {
+                snapshot = try await loader.loadSnapshot(including: loadedKinds)
+                loadedTasks = snapshot.tasks
+            }
             let displayedTasks = loadedTasks.filter { includedTaskKinds.contains($0.kind) }
+
             var reconciledLedger = ledger
             reconciledLedger.reconcileFinishedStates(with: loadedTasks)
             reconciledLedger.reconcileMembership(
-                with: loadedTasks.filter { CodexTaskKind.defaultVisible.contains($0.kind) }
+                with: loadedTasks.filter { CodexTaskKind.defaultVisible.contains($0.kind) },
+                observing: loadedTasks
             )
             for task in loadedTasks
             where task.status == .finished && task.finishedAt.map({ $0 <= launchedAt }) == true
@@ -152,8 +185,7 @@ public final class AttentionConsole {
 
             let tasksChanged = displayedTasks != sourceTasks
             let projectsChanged = snapshot.projects != projects
-            let projectCreationDatesChanged = snapshot.newestTaskCreationDatesByProjectID
-                != newestTaskCreationDatesByProjectID
+            let pendingArchivesChanged = latestPendingArchiveTaskIDs != pendingArchiveTaskIDs
             let ledgerChanged = reconciledLedger != ledger
             let recoveredFromError = errorMessage != nil
 
@@ -167,19 +199,22 @@ public final class AttentionConsole {
             if projectsChanged {
                 projects = snapshot.projects
             }
-            if projectCreationDatesChanged {
-                newestTaskCreationDatesByProjectID = snapshot.newestTaskCreationDatesByProjectID
+            if pendingArchivesChanged {
+                pendingArchiveTaskIDs = latestPendingArchiveTaskIDs
             }
             if lastUpdated == nil
                 || tasksChanged
                 || projectsChanged
-                || projectCreationDatesChanged
+                || pendingArchivesChanged
                 || recoveredFromError
             {
                 lastUpdated = Date()
             }
             if recoveredFromError {
                 errorMessage = nil
+            }
+            if let retryError {
+                throw retryError
             }
         } catch {
             let message = error.localizedDescription
@@ -199,19 +234,25 @@ public final class AttentionConsole {
         storage.save(ledger)
     }
 
-    public func setArchived(_ archived: Bool, for taskID: String) async -> Bool {
+    public func setArchived(
+        _ archived: Bool,
+        for taskID: String
+    ) async -> CodexTaskArchiveResult? {
         do {
-            try await archiver.setArchived(archived, taskID: taskID)
+            let result = try await archiver.setArchived(archived, taskID: taskID)
+            pendingArchiveTaskIDs = await archiver.pendingArchiveTaskIDs()
             if archived {
-                sourceTasks.removeAll { $0.id == taskID }
-                lastUpdated = Date()
+                if result == .completed {
+                    sourceTasks.removeAll { $0.id == taskID }
+                    lastUpdated = Date()
+                }
             } else {
                 await refresh(showsActivity: false)
             }
-            return true
+            return result
         } catch {
             errorMessage = error.localizedDescription
-            return false
+            return nil
         }
     }
 

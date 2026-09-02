@@ -35,14 +35,20 @@ public struct VisibilityLedger: Codable, Equatable, Sendable {
         )
     }
 
-    public mutating func reconcileMembership(with tasks: [CodexTask]) {
+    public mutating func reconcileMembership(
+        with tasks: [CodexTask],
+        observing observedTasks: [CodexTask]? = nil
+    ) {
         let availableIDs = Set(tasks.map(\.id))
         let currentActiveIDs = Set(tasks.lazy.filter(\.status.isActive).map(\.id))
+        let observedActiveIDs = Set(
+            (observedTasks ?? tasks).lazy.filter(\.status.isActive).map(\.id)
+        )
 
         if !isBootstrapped {
             knownTaskIDs.formUnion(availableIDs)
             monitoredTaskIDs.formUnion(currentActiveIDs.subtracting(hiddenTaskIDs))
-            activeTaskIDs = currentActiveIDs
+            activeTaskIDs = observedActiveIDs
             isBootstrapped = true
             return
         }
@@ -54,7 +60,7 @@ public struct VisibilityLedger: Codable, Equatable, Sendable {
         let reactivatedTaskIDs = currentActiveIDs.subtracting(activeTaskIDs)
         hiddenTaskIDs.subtract(reactivatedTaskIDs)
         monitoredTaskIDs.formUnion(reactivatedTaskIDs)
-        activeTaskIDs = currentActiveIDs
+        activeTaskIDs = observedActiveIDs
     }
 
     public mutating func hide(taskID: String) {

@@ -255,13 +255,13 @@ struct TaskModelTests {
     }
 
     @Test
-    func automaticProjectOrderUsesNewestTaskCreationDateAndKeepsChatsLast() {
+    func automaticProjectOrderUsesActiveStateThenMostRecentInteraction() {
         let now = Date()
         let tasks = [
-            task("zebra-error", project: "zebra", status: .error, date: now, createdAt: now.addingTimeInterval(-30)),
-            task("alpha-inactive", project: "alpha", status: .inactive, date: now.addingTimeInterval(-30), createdAt: now),
-            task("bravo-working", project: "bravo", status: .working, date: now.addingTimeInterval(-10), createdAt: now.addingTimeInterval(-20)),
-            task("chat-newest", project: "Chats", status: .working, date: now, createdAt: now.addingTimeInterval(10), isChat: true)
+            task("zebra-error", project: "zebra", status: .error, date: now.addingTimeInterval(-30)),
+            task("alpha-inactive", project: "alpha", status: .inactive, date: now),
+            task("bravo-working", project: "bravo", status: .working, date: now.addingTimeInterval(-20)),
+            task("chat-working", project: "Chats", status: .working, date: now.addingTimeInterval(-10), isChat: true)
         ]
         var sections = TaskGrouping.sections(from: tasks)
         sections.append(ProjectSection(
@@ -274,28 +274,33 @@ struct TaskModelTests {
 
         let ordered = ProjectOrdering.sortingAutomatically(sections, using: tasks)
 
-        #expect(ordered.map(\.name) == ["alpha", "bravo", "zebra", "empty", "Chats"])
+        #expect(ordered.map(\.name) == ["Chats", "bravo", "zebra", "alpha", "empty"])
     }
 
     @Test
-    func automaticProjectOrderUsesUnfilteredTasksForProjectCreationDate() {
+    func automaticProjectOrderUsesAllSuppliedTasksForProjectActivity() {
         let now = Date()
         let visibleTasks = [
-            task("alpha-visible", project: "alpha", status: .inactive, date: now, createdAt: now.addingTimeInterval(-30)),
-            task("bravo-visible", project: "bravo", status: .working, date: now, createdAt: now.addingTimeInterval(-20))
+            task("alpha-visible", project: "alpha", status: .inactive, date: now.addingTimeInterval(-30)),
+            task("bravo-visible", project: "bravo", status: .working, date: now.addingTimeInterval(-20))
         ]
-        let allTasks = visibleTasks + [
+        let tasksIncludingHiddenChild = visibleTasks + [
             task("alpha-filtered-out", project: "alpha", status: .error, date: now, createdAt: now)
         ]
         let sections = TaskGrouping.sections(from: visibleTasks)
 
-        let ordered = ProjectOrdering.sortingAutomatically(sections, using: allTasks)
+        let visibleOrder = ProjectOrdering.sortingAutomatically(sections, using: visibleTasks)
+        let orderIncludingHiddenChild = ProjectOrdering.sortingAutomatically(
+            sections,
+            using: tasksIncludingHiddenChild
+        )
 
-        #expect(ordered.map(\.name) == ["alpha", "bravo"])
+        #expect(visibleOrder.map(\.name) == ["bravo", "alpha"])
+        #expect(orderIncludingHiddenChild.map(\.name) == ["alpha", "bravo"])
     }
 
     @Test
-    func automaticProjectOrderKeepsTasksNewestFirstAndEmptyChatsLast() {
+    func automaticProjectOrderKeepsActiveTasksFirstThenMostRecentlyUpdated() {
         let now = Date()
         let projectTasks = [
             task("inactive", project: "client", status: .inactive, date: now),
@@ -317,7 +322,7 @@ struct TaskModelTests {
         let ordered = ProjectOrdering.sortingAutomatically(sections, using: projectTasks)
 
         #expect(ordered.map(\.name) == ["client", "Chats"])
-        #expect(ordered[0].tasks.map(\.id) == ["inactive", "finished", "working"])
+        #expect(ordered[0].tasks.map(\.id) == ["working", "inactive", "finished"])
     }
 
     @Test
