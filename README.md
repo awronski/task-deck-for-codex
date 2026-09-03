@@ -90,7 +90,7 @@ Codex state is read locally from:
 - `~/.codex/.codex-global-state.json`
 - Session JSONL files under `~/.codex/sessions/`
 
-Archiving and undo use Codex's bundled command-line tool so Codex moves session files and updates its state consistently. When Codex's local app-server control socket is reachable, Task Deck connects to that shared server. If another Codex client currently owns the task, Task Deck removes its Console pin, keeps a durable archive request, and retries automatically until Codex releases its writer lock. The queued task remains available under All Tasks with a blue clock that can be clicked to cancel the request. Pins, title overrides, flags, notes, reminders, project order, and other Task Deck preferences are stored locally in macOS `UserDefaults`.
+Archiving and undo use Codex's bundled local app-server protocol so Codex moves session files and updates its state consistently. When Codex's local app-server control socket is reachable, Task Deck connects to that shared server; when no compatible local app server is available, it falls back to Codex's bundled command-line tool. If another Codex client currently owns the task or one of its spawned subtasks, Task Deck removes its Console pin, keeps a durable archive request, and retries automatically until Codex releases its writer lock. An opaque command-line archive failure is queued only when Task Deck can independently confirm a held Codex writer lock; other failures remain visible. The queued task remains available under All Tasks with a blue clock that can be clicked to cancel the request. Pins, title overrides, flags, notes, reminders, project order, and other Task Deck preferences are stored locally in macOS `UserDefaults`.
 
 ## Compatibility and unofficial status
 

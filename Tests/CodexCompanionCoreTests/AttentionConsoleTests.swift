@@ -578,12 +578,40 @@ struct AttentionConsoleTests {
         #expect(console.monitoredTasks.isEmpty)
         #expect(!console.isMonitored(task.id))
         #expect(console.pendingArchiveTaskIDs == [task.id])
+        #expect(console.errorMessage == nil)
 
         #expect(await console.setArchived(false, for: task.id) == .completed)
         #expect(console.allTasks.map(\.id) == [task.id])
         #expect(console.monitoredTasks.map(\.id) == [task.id])
         #expect(console.isMonitored(task.id))
         #expect(console.pendingArchiveTaskIDs.isEmpty)
+        #expect(console.errorMessage == nil)
+    }
+
+    @Test
+    func failedArchiveKeepsTheTaskVisibleWithoutCreatingPendingState() async {
+        let task = codexTask(
+            "task",
+            title: "Task with an archive failure",
+            status: .inactive
+        )
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [task]),
+            archiver: FailingTestTaskArchiver(),
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await console.refresh()
+        console.enable(task.id)
+
+        #expect(await console.setArchived(true, for: task.id) == nil)
+        #expect(console.allTasks.map(\.id) == [task.id])
+        #expect(console.monitoredTasks.map(\.id) == [task.id])
+        #expect(console.isMonitored(task.id))
+        #expect(console.pendingArchiveTaskIDs.isEmpty)
+        #expect(console.errorMessage == "Codex archive failed")
     }
 
     @Test
@@ -1261,6 +1289,19 @@ private actor DeferredTestTaskArchiver: CodexTaskArchiving {
     func pendingArchiveTaskIDs() async -> Set<String> {
         pendingTaskIDs
     }
+}
+
+private actor FailingTestTaskArchiver: CodexTaskArchiving {
+    func setArchived(
+        _ archived: Bool,
+        taskID: String
+    ) throws -> CodexTaskArchiveResult {
+        throw TestArchiveError()
+    }
+}
+
+private struct TestArchiveError: LocalizedError {
+    var errorDescription: String? { "Codex archive failed" }
 }
 
 private actor RetryRecordingTaskArchiver: CodexTaskArchiving {

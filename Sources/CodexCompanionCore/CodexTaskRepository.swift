@@ -64,6 +64,7 @@ public actor CodexTaskRepository:
     CodexTaskRenaming
 {
     private struct AppServerError: Decodable {
+        let code: Int?
         let message: String
     }
 
@@ -72,7 +73,11 @@ public actor CodexTaskRepository:
         let error: AppServerError?
     }
 
-    private struct UnarchivedTaskRow: Decodable {
+    private struct ArchiveStateRow: Decodable {
+        let archived: Int
+    }
+
+    private struct TaskIDRow: Decodable {
         let id: String
     }
 
@@ -86,6 +91,60 @@ public actor CodexTaskRepository:
         case exited(String)
         case timedOut
         case outputReadFailed
+    }
+
+    private enum AppServerPhase: Equatable, Sendable {
+        case initialization
+        case request
+    }
+
+    private enum AppServerRequestFailure: Error, Sendable {
+        case launch(String)
+        case server(phase: AppServerPhase, code: Int?, message: String)
+        case connectionClosed(phase: AppServerPhase)
+        case writeFailed(phase: AppServerPhase, message: String)
+        case exited(phase: AppServerPhase, message: String)
+        case timedOut(phase: AppServerPhase)
+        case outputReadFailed(phase: AppServerPhase)
+        case cancelled(phase: AppServerPhase)
+
+        var permitsCompatibilityFallback: Bool {
+            switch self {
+            case .launch:
+                true
+            case let .server(phase, code, message):
+                phase == .initialization
+                    || code == -32_601
+                    || message.lowercased().hasPrefix("invalid request: unknown variant")
+            case let .connectionClosed(phase),
+                 let .writeFailed(phase, _),
+                 let .exited(phase, _),
+                 let .timedOut(phase),
+                 let .outputReadFailed(phase):
+                phase == .initialization
+            case .cancelled:
+                false
+            }
+        }
+    }
+
+    private enum ArchiveState: Equatable {
+        case archived
+        case unarchived
+        case missing
+
+        func matches(_ archived: Bool) -> Bool {
+            switch (self, archived) {
+            case (.archived, true), (.unarchived, false): true
+            default: false
+            }
+        }
+    }
+
+    private enum WriterLockState: Equatable {
+        case held
+        case notHeld
+        case unknown
     }
 
     private struct ThreadRow: Decodable {
@@ -347,11 +406,39 @@ public actor CodexTaskRepository:
         codexHomeURL: URL,
         timeout: TimeInterval
     ) throws {
+        do {
+            try runAppServerRequest(
+                arguments: ["app-server", "--listen", "stdio://"],
+                method: "thread/name/set",
+                params: [
+                    "threadId": taskID,
+                    "name": title
+                ],
+                codexExecutableURL: codexExecutableURL,
+                codexHomeURL: codexHomeURL,
+                timeout: timeout
+            )
+        } catch let failure as AppServerRequestFailure {
+            if case .cancelled = failure {
+                throw CancellationError()
+            }
+            throw titleRepositoryError(for: failure)
+        }
+    }
+
+    private nonisolated static func runAppServerRequest(
+        arguments: [String],
+        method: String,
+        params: [String: Any],
+        codexExecutableURL: URL,
+        codexHomeURL: URL,
+        timeout: TimeInterval
+    ) throws {
         let process = Process()
         let input = Pipe()
         let output = Pipe()
         process.executableURL = codexExecutableURL
-        process.arguments = ["app-server", "--listen", "stdio://"]
+        process.arguments = arguments
         process.environment = ProcessInfo.processInfo.environment.merging([
             "CODEX_HOME": codexHomeURL.path
         ]) { _, codexHome in codexHome }
@@ -362,7 +449,7 @@ public actor CodexTaskRepository:
         do {
             try process.run()
         } catch {
-            throw CodexRepositoryError.codexTitleUpdateFailed(error.localizedDescription)
+            throw AppServerRequestFailure.launch(error.localizedDescription)
         }
 
         defer {
@@ -376,8 +463,9 @@ public actor CodexTaskRepository:
         let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
         var responseBuffer = Data()
         var diagnostics = Data()
-        do {
-            try writeAppServerMessage([
+
+        try writeAppServerMessage(
+            [
                 "id": 1,
                 "method": "initialize",
                 "params": [
@@ -387,72 +475,93 @@ public actor CodexTaskRepository:
                         "version": "1"
                     ]
                 ]
-            ], to: input.fileHandleForWriting)
-            try readAppServerResponse(
-                requestID: 1,
-                from: output.fileHandleForReading,
-                buffer: &responseBuffer,
-                diagnostics: &diagnostics,
-                deadline: deadline
-            )
+            ],
+            phase: .initialization,
+            to: input.fileHandleForWriting
+        )
+        try readAppServerResponse(
+            requestID: 1,
+            phase: .initialization,
+            from: output.fileHandleForReading,
+            buffer: &responseBuffer,
+            diagnostics: &diagnostics,
+            deadline: deadline
+        )
 
-            try writeAppServerMessage(
-                ["method": "initialized"],
-                to: input.fileHandleForWriting
-            )
-            try writeAppServerMessage([
+        try checkAppServerDeadline(deadline, phase: .initialization)
+        try writeAppServerMessage(
+            ["method": "initialized", "params": [:]],
+            phase: .initialization,
+            to: input.fileHandleForWriting
+        )
+        try writeAppServerMessage(
+            [
                 "id": 2,
-                "method": "thread/name/set",
-                "params": [
-                    "threadId": taskID,
-                    "name": title
-                ]
-            ], to: input.fileHandleForWriting)
-            try readAppServerResponse(
-                requestID: 2,
-                from: output.fileHandleForReading,
-                buffer: &responseBuffer,
-                diagnostics: &diagnostics,
-                deadline: deadline
-            )
-        } catch let error as CodexRepositoryError {
-            throw error
-        } catch {
-            throw CodexRepositoryError.codexTitleUpdateFailed(error.localizedDescription)
-        }
+                "method": method,
+                "params": params
+            ],
+            phase: .request,
+            to: input.fileHandleForWriting
+        )
+        try readAppServerResponse(
+            requestID: 2,
+            phase: .request,
+            from: output.fileHandleForReading,
+            buffer: &responseBuffer,
+            diagnostics: &diagnostics,
+            deadline: deadline
+        )
 
         try? input.fileHandleForWriting.close()
-        try waitForProcessExit(
+        try waitForAppServerExit(
             process,
             output: output.fileHandleForReading,
             diagnostics: &diagnostics,
-            deadline: deadline
+            deadline: deadline,
+            phase: .request
         )
         guard process.terminationStatus == 0 else {
             let message = String(decoding: diagnostics, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let fallback = "codex app-server exited with code \(process.terminationStatus)"
-            throw CodexRepositoryError.codexTitleUpdateFailed(message.isEmpty ? fallback : message)
+            throw AppServerRequestFailure.exited(
+                phase: .request,
+                message: message.isEmpty ? fallback : message
+            )
         }
     }
 
     private nonisolated static func writeAppServerMessage(
         _ object: [String: Any],
+        phase: AppServerPhase,
         to handle: FileHandle
     ) throws {
-        var message = try JSONSerialization.data(withJSONObject: object)
-        message.append(0x0A)
-        try handle.write(contentsOf: message)
+        do {
+            var message = try JSONSerialization.data(withJSONObject: object)
+            message.append(0x0A)
+            try handle.write(contentsOf: message)
+        } catch {
+            throw AppServerRequestFailure.writeFailed(
+                phase: phase,
+                message: error.localizedDescription
+            )
+        }
     }
 
     private nonisolated static func readAppServerResponse(
         requestID: Int,
+        phase: AppServerPhase,
         from handle: FileHandle,
         buffer: inout Data,
         diagnostics: inout Data,
         deadline: UInt64
     ) throws {
-        while let line = try readAppServerLine(from: handle, buffer: &buffer, deadline: deadline) {
+        while let line = try readAppServerLine(
+            from: handle,
+            buffer: &buffer,
+            deadline: deadline,
+            phase: phase
+        ) {
             guard let response = try? JSONDecoder().decode(AppServerResponse.self, from: line) else {
                 appendDiagnostic(line, to: &diagnostics)
                 continue
@@ -460,19 +569,22 @@ public actor CodexTaskRepository:
             guard response.id == requestID else { continue }
 
             if let error = response.error {
-                throw CodexRepositoryError.codexTitleUpdateFailed(error.message)
+                throw AppServerRequestFailure.server(
+                    phase: phase,
+                    code: error.code,
+                    message: error.message
+                )
             }
             return
         }
-        throw CodexRepositoryError.codexTitleUpdateFailed(
-            "Codex app server closed before confirming the rename."
-        )
+        throw AppServerRequestFailure.connectionClosed(phase: phase)
     }
 
     private nonisolated static func readAppServerLine(
         from handle: FileHandle,
         buffer: inout Data,
-        deadline: UInt64
+        deadline: UInt64,
+        phase: AppServerPhase
     ) throws -> Data? {
         while true {
             if let newline = buffer.firstIndex(of: 0x0A) {
@@ -480,7 +592,7 @@ public actor CodexTaskRepository:
                 buffer.removeSubrange(...newline)
                 return line
             }
-            try waitForReadableData(on: handle, deadline: deadline)
+            try waitForReadableData(on: handle, deadline: deadline, phase: phase)
             let chunk = handle.availableData
             guard !chunk.isEmpty else {
                 guard !buffer.isEmpty else { return nil }
@@ -493,10 +605,11 @@ public actor CodexTaskRepository:
 
     private nonisolated static func waitForReadableData(
         on handle: FileHandle,
-        deadline: UInt64
+        deadline: UInt64,
+        phase: AppServerPhase
     ) throws {
         while true {
-            try checkTitleUpdateDeadline(deadline)
+            try checkAppServerDeadline(deadline, phase: phase)
             var descriptor = pollfd(
                 fd: handle.fileDescriptor,
                 events: Int16(POLLIN | POLLHUP),
@@ -510,20 +623,31 @@ public actor CodexTaskRepository:
             if result > 0 { return }
             if result == 0 { continue }
             if errno == EINTR { continue }
-            throw CodexRepositoryError.codexTitleUpdateFailed(
-                "Codex app server output could not be read."
-            )
+            throw AppServerRequestFailure.outputReadFailed(phase: phase)
         }
     }
 
-    private nonisolated static func waitForProcessExit(
+    private nonisolated static func checkAppServerDeadline(
+        _ deadline: UInt64,
+        phase: AppServerPhase
+    ) throws {
+        if Task.isCancelled {
+            throw AppServerRequestFailure.cancelled(phase: phase)
+        }
+        guard DispatchTime.now().uptimeNanoseconds < deadline else {
+            throw AppServerRequestFailure.timedOut(phase: phase)
+        }
+    }
+
+    private nonisolated static func waitForAppServerExit(
         _ process: Process,
         output: FileHandle,
         diagnostics: inout Data,
-        deadline: UInt64
+        deadline: UInt64,
+        phase: AppServerPhase
     ) throws {
         while process.isRunning {
-            try checkTitleUpdateDeadline(deadline)
+            try checkAppServerDeadline(deadline, phase: phase)
             var descriptor = pollfd(
                 fd: output.fileDescriptor,
                 events: Int16(POLLIN | POLLHUP),
@@ -542,23 +666,32 @@ public actor CodexTaskRepository:
                     appendDiagnostic(chunk, to: &diagnostics)
                 }
             } else if result < 0, errno != EINTR {
-                throw CodexRepositoryError.codexTitleUpdateFailed(
-                    "Codex app server output could not be read."
-                )
+                throw AppServerRequestFailure.outputReadFailed(phase: phase)
             }
         }
         process.waitUntilExit()
     }
 
-    private nonisolated static func checkTitleUpdateDeadline(_ deadline: UInt64) throws {
-        if Task.isCancelled {
-            throw CancellationError()
+    private nonisolated static func titleRepositoryError(
+        for failure: AppServerRequestFailure
+    ) -> CodexRepositoryError {
+        let message: String
+        switch failure {
+        case let .launch(value),
+             let .server(_, _, value),
+             let .writeFailed(_, value),
+             let .exited(_, value):
+            message = value
+        case .connectionClosed:
+            message = "Codex app server closed before confirming the rename."
+        case .timedOut:
+            message = "Codex app server timed out while renaming the task."
+        case .outputReadFailed:
+            message = "Codex app server output could not be read."
+        case .cancelled:
+            message = CancellationError().localizedDescription
         }
-        guard DispatchTime.now().uptimeNanoseconds < deadline else {
-            throw CodexRepositoryError.codexTitleUpdateFailed(
-                "Codex app server timed out while renaming the task."
-            )
-        }
+        return .codexTitleUpdateFailed(message)
     }
 
     private nonisolated static func pollInterval(until deadline: UInt64) -> Int32 {
@@ -592,7 +725,7 @@ public actor CodexTaskRepository:
         _ archived: Bool,
         taskID: String
     ) async throws -> CodexTaskArchiveResult {
-        guard UUID(uuidString: taskID) != nil else {
+        guard let taskUUID = UUID(uuidString: taskID) else {
             throw CodexRepositoryError.invalidTaskID(taskID)
         }
         guard let codexExecutableURL,
@@ -601,34 +734,76 @@ public actor CodexTaskRepository:
             throw CodexRepositoryError.codexExecutableMissing
         }
 
+        let canonicalTaskID = taskUUID.uuidString.lowercased()
         let codexHomeURL = self.codexHomeURL
         let socketURL = sharedAppServerSocketURL()
         let archiveUpdateTimeout = self.archiveUpdateTimeout
+        let archiveTaskIDs = archived
+            ? archiveSubtreeTaskIDs(rootTaskID: canonicalTaskID)
+            : [canonicalTaskID]
         let operation = Task.detached(priority: .userInitiated) {
             try Self.performArchiveUpdate(
                 archived,
-                taskID: taskID,
+                taskID: canonicalTaskID,
+                archiveTaskIDs: archiveTaskIDs,
                 codexExecutableURL: codexExecutableURL,
                 codexHomeURL: codexHomeURL,
                 socketURL: socketURL,
                 timeout: archiveUpdateTimeout
             )
         }
-        try await withTaskCancellationHandler {
-            try await operation.value
-        } onCancel: {
-            operation.cancel()
+        do {
+            try await withTaskCancellationHandler {
+                try await operation.value
+            } onCancel: {
+                operation.cancel()
+            }
+        } catch let failure as AppServerRequestFailure {
+            guard case let .cancelled(phase) = failure else { throw failure }
+            guard phase == .request,
+                  (try? archiveState(taskID: canonicalTaskID))?.matches(archived) == true
+            else {
+                throw CancellationError()
+            }
+        } catch is CancellationError {
+            guard (try? archiveState(taskID: canonicalTaskID))?.matches(archived) == true else {
+                throw CancellationError()
+            }
+        } catch {
+            let refreshedLockState: WriterLockState? = if archived,
+               case let CodexRepositoryError.codexCommandFailed(message) = error,
+               Self.isGenericArchiveFailure(message)
+            {
+                Self.archiveWriterLockState(
+                    taskIDs: archiveSubtreeTaskIDs(rootTaskID: canonicalTaskID),
+                    codexHomeURL: codexHomeURL,
+                    archived: true
+                )
+            } else {
+                nil
+            }
+            if (try? archiveState(taskID: canonicalTaskID))?.matches(archived) == true {
+                // The request completed even though its response was lost.
+            } else if refreshedLockState == .held {
+                throw CodexRepositoryError.codexTaskHasActiveWriter
+            } else {
+                throw error
+            }
         }
 
         CodexDesktopNotifier(codexHome: codexHomeURL)
-            .notify(archived: archived, taskID: taskID)
+            .notify(archived: archived, taskID: canonicalTaskID)
         return .completed
     }
 
     public func isTaskUnarchived(_ taskID: String) async throws -> Bool {
-        guard UUID(uuidString: taskID) != nil else {
+        guard let taskUUID = UUID(uuidString: taskID) else {
             throw CodexRepositoryError.invalidTaskID(taskID)
         }
+        return try archiveState(taskID: taskUUID.uuidString.lowercased()) == .unarchived
+    }
+
+    private func archiveState(taskID: String) throws -> ArchiveState {
         guard FileManager.default.fileExists(atPath: databaseURL.path) else {
             throw CodexRepositoryError.databaseMissing(databaseURL.path)
         }
@@ -636,54 +811,171 @@ public actor CodexTaskRepository:
         let output: Data
         do {
             output = try runDatabaseQuery(
-                "SELECT id FROM threads WHERE id = '\(taskID)' AND archived = 0 LIMIT 1"
+                "SELECT archived FROM threads WHERE id = '\(taskID)' LIMIT 1"
             )
         } catch let failure as SQLiteFailure {
             throw CodexRepositoryError.sqliteFailed(failure.message)
         }
-        guard !output.isEmpty else { return false }
-        guard let rows = try? JSONDecoder().decode([UnarchivedTaskRow].self, from: output) else {
+        guard !output.isEmpty else { return .missing }
+        guard let row = try? JSONDecoder().decode([ArchiveStateRow].self, from: output).first else {
             throw CodexRepositoryError.invalidDatabaseResponse
         }
-        return !rows.isEmpty
+        return row.archived == 0 ? .unarchived : .archived
+    }
+
+    private func archiveSubtreeTaskIDs(rootTaskID: String) -> [String] {
+        let query = """
+        WITH RECURSIVE archive_tree(id) AS (
+            SELECT '\(rootTaskID)'
+            UNION
+            SELECT edges.child_thread_id
+            FROM thread_spawn_edges AS edges
+            JOIN archive_tree ON edges.parent_thread_id = archive_tree.id
+        )
+        SELECT id FROM archive_tree
+        """
+        guard let output = try? runDatabaseQuery(query),
+              let rows = try? JSONDecoder().decode([TaskIDRow].self, from: output)
+        else {
+            return [rootTaskID]
+        }
+
+        var taskIDs = Set([rootTaskID])
+        for row in rows {
+            guard let uuid = UUID(uuidString: row.id) else { continue }
+            taskIDs.insert(uuid.uuidString.lowercased())
+        }
+        return taskIDs.sorted()
     }
 
     private nonisolated static func performArchiveUpdate(
         _ archived: Bool,
         taskID: String,
+        archiveTaskIDs: [String],
         codexExecutableURL: URL,
         codexHomeURL: URL,
         socketURL: URL?,
         timeout: TimeInterval
     ) throws {
         let command = archived ? "archive" : "unarchive"
+        let method = archived ? "thread/archive" : "thread/unarchive"
         let directArguments = [command, taskID]
-        let arguments = socketURL.map {
-            [command, "--remote", "unix://\($0.path)", taskID]
-        } ?? directArguments
 
-        do {
-            try runArchiveCommand(
-                arguments: arguments,
-                codexExecutableURL: codexExecutableURL,
+        if let socketURL {
+            let lockStateBefore = archiveWriterLockState(
+                taskIDs: archiveTaskIDs,
                 codexHomeURL: codexHomeURL,
-                timeout: timeout
+                archived: archived
             )
-        } catch ArchiveCommandFailure.exited(_)
-            where socketURL.map({ !isReachableUnixSocket($0) }) == true
-        {
             do {
-                try runArchiveCommand(
-                    arguments: directArguments,
+                try runAppServerRequest(
+                    arguments: ["app-server", "proxy", "--sock", socketURL.path],
+                    method: method,
+                    params: ["threadId": taskID],
                     codexExecutableURL: codexExecutableURL,
                     codexHomeURL: codexHomeURL,
                     timeout: timeout
                 )
-            } catch let failure as ArchiveCommandFailure {
-                throw archiveRepositoryError(for: failure)
+                return
+            } catch let failure as AppServerRequestFailure {
+                if case .cancelled = failure { throw failure }
+                if !failure.permitsCompatibilityFallback {
+                    throw archiveRepositoryError(
+                        for: failure,
+                        archived: archived,
+                        lockStateBefore: lockStateBefore,
+                        lockStateAfter: archiveWriterLockState(
+                            taskIDs: archiveTaskIDs,
+                            codexHomeURL: codexHomeURL,
+                            archived: archived
+                        )
+                    )
+                }
             }
+
+            if isReachableUnixSocket(socketURL) {
+                let lockStateBefore = archiveWriterLockState(
+                    taskIDs: archiveTaskIDs,
+                    codexHomeURL: codexHomeURL,
+                    archived: archived
+                )
+                do {
+                    try runArchiveCommand(
+                        arguments: [command, "--remote", "unix://\(socketURL.path)", taskID],
+                        codexExecutableURL: codexExecutableURL,
+                        codexHomeURL: codexHomeURL,
+                        timeout: timeout
+                    )
+                    return
+                } catch let failure as ArchiveCommandFailure {
+                    throw archiveRepositoryError(
+                        for: failure,
+                        archived: archived,
+                        lockStateBefore: lockStateBefore,
+                        lockStateAfter: archiveWriterLockState(
+                            taskIDs: archiveTaskIDs,
+                            codexHomeURL: codexHomeURL,
+                            archived: archived
+                        )
+                    )
+                }
+            }
+        }
+
+        let appServerLockStateBefore = archiveWriterLockState(
+            taskIDs: archiveTaskIDs,
+            codexHomeURL: codexHomeURL,
+            archived: archived
+        )
+        do {
+            try runAppServerRequest(
+                arguments: ["app-server", "--listen", "stdio://"],
+                method: method,
+                params: ["threadId": taskID],
+                codexExecutableURL: codexExecutableURL,
+                codexHomeURL: codexHomeURL,
+                timeout: timeout
+            )
+            return
+        } catch let failure as AppServerRequestFailure {
+            if case .cancelled = failure { throw failure }
+            if !failure.permitsCompatibilityFallback {
+                throw archiveRepositoryError(
+                    for: failure,
+                    archived: archived,
+                    lockStateBefore: appServerLockStateBefore,
+                    lockStateAfter: archiveWriterLockState(
+                        taskIDs: archiveTaskIDs,
+                        codexHomeURL: codexHomeURL,
+                        archived: archived
+                    )
+                )
+            }
+        }
+
+        let commandLockStateBefore = archiveWriterLockState(
+            taskIDs: archiveTaskIDs,
+            codexHomeURL: codexHomeURL,
+            archived: archived
+        )
+        do {
+            try runArchiveCommand(
+                arguments: directArguments,
+                codexExecutableURL: codexExecutableURL,
+                codexHomeURL: codexHomeURL,
+                timeout: timeout
+            )
         } catch let failure as ArchiveCommandFailure {
-            throw archiveRepositoryError(for: failure)
+            throw archiveRepositoryError(
+                for: failure,
+                archived: archived,
+                lockStateBefore: commandLockStateBefore,
+                lockStateAfter: archiveWriterLockState(
+                    taskIDs: archiveTaskIDs,
+                    codexHomeURL: codexHomeURL,
+                    archived: archived
+                )
+            )
         }
     }
 
@@ -782,20 +1074,133 @@ public actor CodexTaskRepository:
     }
 
     private nonisolated static func archiveRepositoryError(
-        for failure: ArchiveCommandFailure
+        for failure: ArchiveCommandFailure,
+        archived: Bool,
+        lockStateBefore: WriterLockState,
+        lockStateAfter: WriterLockState
     ) -> CodexRepositoryError {
         switch failure {
-        case let .exited(message) where message.localizedCaseInsensitiveContains(
-            "already has an active writer"
-        ):
-            .codexTaskHasActiveWriter
-        case let .launch(message), let .exited(message):
+        case let .exited(message):
+            archiveMessageError(
+                message,
+                archived: archived,
+                lockStateBefore: lockStateBefore,
+                lockStateAfter: lockStateAfter
+            )
+        case let .launch(message):
             .codexCommandFailed(message)
         case .timedOut:
             .codexCommandFailed("Codex command timed out while updating the task.")
         case .outputReadFailed:
             .codexCommandFailed("Codex command output could not be read.")
         }
+    }
+
+    private nonisolated static func archiveRepositoryError(
+        for failure: AppServerRequestFailure,
+        archived: Bool,
+        lockStateBefore: WriterLockState,
+        lockStateAfter: WriterLockState
+    ) -> CodexRepositoryError {
+        switch failure {
+        case let .server(_, _, message):
+            archiveMessageError(
+                message,
+                archived: archived,
+                lockStateBefore: lockStateBefore,
+                lockStateAfter: lockStateAfter
+            )
+        case let .launch(message), let .writeFailed(_, message):
+            .codexCommandFailed(message)
+        case let .exited(_, message):
+            .codexCommandFailed(message)
+        case let .connectionClosed(phase):
+            .codexCommandFailed(
+                phase == .request
+                    ? "Codex app server closed before confirming the archive update."
+                    : "Codex app server closed before it was ready."
+            )
+        case .timedOut:
+            .codexCommandFailed("Codex command timed out while updating the task.")
+        case .outputReadFailed:
+            .codexCommandFailed("Codex command output could not be read.")
+        case .cancelled:
+            .codexCommandFailed(CancellationError().localizedDescription)
+        }
+    }
+
+    private nonisolated static func archiveMessageError(
+        _ message: String,
+        archived: Bool,
+        lockStateBefore: WriterLockState,
+        lockStateAfter: WriterLockState
+    ) -> CodexRepositoryError {
+        if message.localizedCaseInsensitiveContains("already has an active writer") {
+            return .codexTaskHasActiveWriter
+        }
+        if archived,
+           isGenericArchiveFailure(message),
+           lockStateBefore == .held || lockStateAfter == .held
+        {
+            return .codexTaskHasActiveWriter
+        }
+        return .codexCommandFailed(message)
+    }
+
+    private nonisolated static func isGenericArchiveFailure(_ message: String) -> Bool {
+        var normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.lowercased().hasPrefix("error:") {
+            normalized.removeFirst("error:".count)
+            normalized = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return normalized.caseInsensitiveCompare("failed to archive session") == .orderedSame
+    }
+
+    private nonisolated static func archiveWriterLockState(
+        taskIDs: [String],
+        codexHomeURL: URL,
+        archived: Bool
+    ) -> WriterLockState {
+        guard archived else { return .unknown }
+
+        var sawUnknown = false
+        let lockDirectory = codexHomeURL.appendingPathComponent(
+            "thread-writer-locks",
+            isDirectory: true
+        )
+        for taskID in taskIDs {
+            let lockURL = lockDirectory.appendingPathComponent("\(taskID).lock")
+            switch writerLockState(at: lockURL) {
+            case .held:
+                return .held
+            case .notHeld:
+                continue
+            case .unknown:
+                sawUnknown = true
+            }
+        }
+        return sawUnknown ? .unknown : .notHeld
+    }
+
+    private nonisolated static func writerLockState(at lockURL: URL) -> WriterLockState {
+        let descriptor = Darwin.open(lockURL.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            return errno == ENOENT ? .notHeld : .unknown
+        }
+        defer { Darwin.close(descriptor) }
+
+        var fileStatus = stat()
+        guard Darwin.fstat(descriptor, &fileStatus) == 0,
+              fileStatus.st_mode & S_IFMT == S_IFREG
+        else {
+            return .unknown
+        }
+
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            return errno == EWOULDBLOCK || errno == EAGAIN ? .held : .unknown
+        }
+        _ = flock(descriptor, LOCK_UN)
+        return .notHeld
     }
 
     private func sharedAppServerSocketURL() -> URL? {
