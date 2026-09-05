@@ -15,29 +15,61 @@ The ready-made app is Developer ID signed and Apple notarized. Open the DMG and 
 ## See your Codex work at a glance
 
 <p align="center">
-  <a href="docs/images/task-deck-attention-states.png">
-    <img src="docs/images/task-deck-attention-states.png" alt="Task Deck overview with live Codex task states" width="72%">
+  <a href="docs/images/task-deck-demo-activity.jpg">
+    <img src="docs/images/task-deck-demo-activity.jpg" alt="Task Deck showing Customer Portal and Mobile App demo projects, pinned tasks, Focus badges, colored flags, and expanded activity" width="700">
   </a>
 </p>
 
 <p align="center">
-  <sub><strong>Monitor every task</strong> from one clear view and keep the work that matters in focus.</sub>
+  <sub><strong>Keep important work close.</strong> See task status, Focus markers, flags, notes, reminders, and current activity together.</sub>
 </p>
+
+Screenshots show fictional projects and task content. Select any image to view it at full size.
 
 <details>
-<summary><strong>See reminders and expanded live activity</strong></summary>
+<summary><strong>Focus on a few tasks</strong></summary>
 <br>
 <p align="center">
-  <a href="docs/images/task-deck-attention-states-reminder.png">
-    <img src="docs/images/task-deck-attention-states-reminder.png" alt="Setting a task reminder in Task Deck" width="46%">
-  </a>
-  &nbsp;
-  <a href="docs/images/task-deck-attention-states-expanded.png">
-    <img src="docs/images/task-deck-attention-states-expanded.png" alt="Expanded live Codex task activity in Task Deck" width="46%">
+  <a href="docs/images/task-deck-demo-focus.jpg">
+    <img src="docs/images/task-deck-demo-focus.jpg" alt="Focus mode showing three selected tasks across the Customer Portal and Mobile App demo projects" width="700">
   </a>
 </p>
 <p align="center">
-  <sub><strong>Set reminders</strong> for work to revisit · <strong>Expand activity</strong> to see what Codex is doing now</sub>
+  <sub><strong>Focus</strong> keeps your current selection in one view.</sub>
+</p>
+<p align="center">
+  <a href="docs/images/task-deck-demo-focus-picker.jpg">
+    <img src="docs/images/task-deck-demo-focus-picker.jpg" alt="Choose your focus picker with three tasks selected from five pinned demo tasks" width="520">
+  </a>
+</p>
+<p align="center">
+  <sub><strong>Choose from your pinned tasks</strong> and adjust the selection as your priorities change.</sub>
+</p>
+</details>
+
+<details>
+<summary><strong>Keep a note with the task</strong></summary>
+<br>
+<p align="center">
+  <a href="docs/images/task-deck-demo-note.jpg">
+    <img src="docs/images/task-deck-demo-note.jpg" alt="Task note recording fictional account permissions for the Clarify account permissions task" width="768">
+  </a>
+</p>
+<p align="center">
+  <sub><strong>Save context for later</strong> without leaving your task list.</sub>
+</p>
+</details>
+
+<details>
+<summary><strong>Set a reminder to return later</strong></summary>
+<br>
+<p align="center">
+  <a href="docs/images/task-deck-demo-reminder.jpg">
+    <img src="docs/images/task-deck-demo-reminder.jpg" alt="Reminder for the Review the billing flow demo task, with options for a delay or an exact date and time" width="768">
+  </a>
+</p>
+<p align="center">
+  <sub><strong>Return at the right time.</strong> Set a delay or choose an exact date and time.</sub>
 </p>
 </details>
 
