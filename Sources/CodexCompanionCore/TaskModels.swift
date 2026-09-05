@@ -478,10 +478,6 @@ public enum TaskText {
             return "Task \(fallbackID.prefix(8))"
         }
 
-        let limit = 96
-        if title.count > limit {
-            title = String(title.prefix(limit - 1)) + "…"
-        }
         return title
     }
 }

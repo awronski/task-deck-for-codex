@@ -15,7 +15,8 @@ public final class AttentionConsole {
     public private(set) var pendingArchiveTaskIDs: Set<String> = []
 
     @ObservationIgnored private let loader: any CodexTaskLoading
-    @ObservationIgnored private let archiver: any CodexTaskArchiving
+    @ObservationIgnored private let archiver: any CodexTaskArchiving & CodexTaskArchiveUndoing
+    @ObservationIgnored private let archiveStateReader: (any CodexTaskArchiveStateReading)?
     @ObservationIgnored private let renamer: (any CodexTaskRenaming)?
     @ObservationIgnored private let storage: any VisibilityStoring
     @ObservationIgnored private let titleStorage: any TaskTitleStoring
@@ -33,13 +34,17 @@ public final class AttentionConsole {
     public private(set) var projectOrderIDs: [String]
     public private(set) var projectAppearances: [String: ProjectAppearance]
     public private(set) var includedTaskKinds = CodexTaskKind.defaultVisible
+    public var automaticallyFocusStartedTasks = true
     @ObservationIgnored private var pollingTask: Task<Void, Never>?
     @ObservationIgnored private var refreshInFlight = false
     @ObservationIgnored private var refreshRequested = false
+    @ObservationIgnored private var archiveMutationRevision: UInt64 = 0
+    @ObservationIgnored private var archiveUndosInFlight = 0
+    @ObservationIgnored private var restoredTaskIDsAwaitingSnapshot: Set<String> = []
 
     public init(
         loader: any CodexTaskLoading,
-        archiver: any CodexTaskArchiving,
+        archiver: any CodexTaskArchiving & CodexTaskArchiveUndoing,
         storage: any VisibilityStoring,
         titleStorage: any TaskTitleStoring,
         priorityStorage: any TaskPriorityStoring,
@@ -48,10 +53,12 @@ public final class AttentionConsole {
         projectOrderStorage: any ProjectOrderStoring,
         projectAppearanceStorage: (any ProjectAppearanceStoring)? = nil,
         renamer: (any CodexTaskRenaming)? = nil,
-        launchedAt: Date = .now
+        launchedAt: Date = .now,
+        archiveStateReader: (any CodexTaskArchiveStateReading)? = nil
     ) {
         self.loader = loader
         self.archiver = archiver
+        self.archiveStateReader = archiveStateReader
         self.renamer = renamer
         self.storage = storage
         self.titleStorage = titleStorage
@@ -71,13 +78,74 @@ public final class AttentionConsole {
     }
 
     public var allTasks: [CodexTask] {
-        sourceTasks.map(taskWithDisplayPreferences)
+        sourceTasks.filter { includedTaskKinds.contains($0.kind) }.map(taskWithDisplayPreferences)
     }
 
     public var monitoredTasks: [CodexTask] {
         allTasks.filter {
             !pendingArchiveTaskIDs.contains($0.id) && ledger.isMonitored($0.id)
         }
+    }
+
+    public var focusedTaskIDs: [String] {
+        ledger.focusedTaskIDs
+    }
+
+    public var focusCandidates: [CodexTask] {
+        sourceTasks.filter {
+            ledger.isMonitored($0.id) && !pendingArchiveTaskIDs.contains($0.id)
+        }.map(taskWithDisplayPreferences)
+    }
+
+    public var focusedTasks: [CodexTask] {
+        let tasksByID = Dictionary(uniqueKeysWithValues: focusCandidates.map { ($0.id, $0) })
+        return focusedTaskIDs.compactMap { tasksByID[$0] }
+    }
+
+    public var outsideFocusAttentionTasks: [CodexTask] {
+        let focusedIDs = Set(focusedTaskIDs)
+        return focusCandidates.filter { task in
+            guard !focusedIDs.contains(task.id) else { return false }
+            switch task.status {
+            case .waitingForInput, .waitingForPermission, .error: return true
+            case .working, .finished, .inactive: return false
+            }
+        }
+    }
+
+    public func setFocusedTasks(_ taskIDs: [String]) {
+        let previousIDs = ledger.focusedTaskIDs
+        let eligibleIDs = Set(focusCandidates.map(\.id)).union(previousIDs)
+        ledger.setFocusedTasks(taskIDs.filter {
+            eligibleIDs.contains($0) && !pendingArchiveTaskIDs.contains($0)
+        })
+        guard ledger.focusedTaskIDs != previousIDs else { return }
+        storage.save(ledger)
+    }
+
+    public func restoreFocusedTasks(_ taskIDs: Set<String>, from previousIDs: [String]) {
+        let currentIDs = ledger.focusedTaskIDs
+        var restoredIDs = currentIDs
+        for (index, taskID) in previousIDs.enumerated() {
+            guard taskIDs.contains(taskID), ledger.isMonitored(taskID),
+                  !pendingArchiveTaskIDs.contains(taskID), !restoredIDs.contains(taskID)
+            else { continue }
+
+            if let predecessor = previousIDs[..<index].last(where: { restoredIDs.contains($0) }),
+               let insertionIndex = restoredIDs.firstIndex(of: predecessor)
+            {
+                restoredIDs.insert(taskID, at: insertionIndex + 1)
+            } else if let successor = previousIDs[(index + 1)...].first(where: { restoredIDs.contains($0) }),
+                      let insertionIndex = restoredIDs.firstIndex(of: successor)
+            {
+                restoredIDs.insert(taskID, at: insertionIndex)
+            } else {
+                restoredIDs.append(taskID)
+            }
+        }
+        ledger.setFocusedTasks(restoredIDs)
+        guard ledger.focusedTaskIDs != currentIDs else { return }
+        storage.save(ledger)
     }
 
     public func isMonitored(_ taskID: String) -> Bool {
@@ -114,10 +182,11 @@ public final class AttentionConsole {
     }
 
     private func refresh(showsActivity: Bool) async {
-        guard !refreshInFlight else {
+        guard !refreshInFlight, archiveUndosInFlight == 0 else {
             refreshRequested = true
             return
         }
+        let refreshArchiveRevision = archiveMutationRevision
         refreshInFlight = true
         if showsActivity {
             isRefreshing = true
@@ -138,13 +207,14 @@ public final class AttentionConsole {
         do {
             let requestedKinds = includedTaskKinds
             var latestPendingArchiveTaskIDs = await archiver.pendingArchiveTaskIDs()
-            var loadedKinds = ledger.isBootstrapped
-                ? requestedKinds
-                : requestedKinds.union(CodexTaskKind.defaultVisible)
+            var loadedKinds = requestedKinds.union(CodexTaskKind.defaultVisible)
             if !latestPendingArchiveTaskIDs.isEmpty {
                 loadedKinds.formUnion(CodexTaskKind.allCases)
             }
-            var snapshot = try await loader.loadSnapshot(including: loadedKinds)
+            var snapshot = try await loader.loadSnapshot(
+                including: loadedKinds,
+                alwaysIncluding: ledger.monitoredTaskIDs
+            )
             var loadedTasks = snapshot.tasks
             let newlyActiveTaskIDs = Set(
                 loadedTasks.lazy.filter(\.status.isActive).map(\.id)
@@ -166,24 +236,65 @@ public final class AttentionConsole {
             }
             latestPendingArchiveTaskIDs = await archiver.pendingArchiveTaskIDs()
             if latestPendingArchiveTaskIDs != pendingArchiveTaskIDsBeforeRetry {
-                snapshot = try await loader.loadSnapshot(including: loadedKinds)
+                snapshot = try await loader.loadSnapshot(
+                    including: loadedKinds,
+                    alwaysIncluding: ledger.monitoredTaskIDs
+                )
                 loadedTasks = snapshot.tasks
             }
-            let displayedTasks = loadedTasks.filter { includedTaskKinds.contains($0.kind) }
 
+            var removedFocusTaskIDs = latestPendingArchiveTaskIDs
+            if let archiveStateReader {
+                let loadedTaskIDs = Set(loadedTasks.map(\.id))
+                for taskID in ledger.focusedTaskIDs where !loadedTaskIDs.contains(taskID) {
+                    do {
+                        if try await !archiveStateReader.isTaskUnarchived(taskID) {
+                            removedFocusTaskIDs.insert(taskID)
+                        }
+                    } catch {
+                        // Missing titles or a failed state read must not erase the selection.
+                        if retryError == nil { retryError = error }
+                    }
+                }
+            }
+
+            guard refreshArchiveRevision == archiveMutationRevision else {
+                refreshRequested = true
+                return
+            }
             var reconciledLedger = ledger
             reconciledLedger.reconcileFinishedStates(with: loadedTasks)
             reconciledLedger.reconcileMembership(
                 with: loadedTasks.filter { CodexTaskKind.defaultVisible.contains($0.kind) },
                 observing: loadedTasks
             )
+            reconciledLedger.setFocusedTasks(
+                reconciledLedger.focusedTaskIDs.filter { !removedFocusTaskIDs.contains($0) }
+            )
+            if automaticallyFocusStartedTasks, lastUpdated != nil {
+                let startedTasks = loadedTasks.filter { task in
+                    reconciledLedger.isMonitored(task.id)
+                        && !removedFocusTaskIDs.contains(task.id)
+                        && !restoredTaskIDsAwaitingSnapshot.contains(task.id)
+                        && (!ledger.knownTaskIDs.contains(task.id)
+                            || (task.status.isActive && !ledger.activeTaskIDs.contains(task.id)))
+                }.sorted {
+                    $0.createdAt == $1.createdAt ? $0.id < $1.id : $0.createdAt > $1.createdAt
+                }
+                reconciledLedger.setFocusedTasks(
+                    reconciledLedger.focusedTaskIDs + startedTasks.map(\.id)
+                )
+            }
+            // Keep exclusions through coalesced refreshes or temporary absence;
+            // after observation, a later inactive-to-active transition is a new start.
+            restoredTaskIDsAwaitingSnapshot.subtract(loadedTasks.map(\.id))
             for task in loadedTasks
             where task.status == .finished && task.finishedAt.map({ $0 <= launchedAt }) == true
             {
-                reconciledLedger.acknowledgeFinished(taskID: task.id)
+                reconciledLedger.acknowledgeFinished(taskID: task.id, finishedAt: task.finishedAt)
             }
 
-            let tasksChanged = displayedTasks != sourceTasks
+            let tasksChanged = loadedTasks != sourceTasks
             let projectsChanged = snapshot.projects != projects
             let pendingArchivesChanged = latestPendingArchiveTaskIDs != pendingArchiveTaskIDs
             let ledgerChanged = reconciledLedger != ledger
@@ -194,7 +305,7 @@ public final class AttentionConsole {
                 storage.save(ledger)
             }
             if tasksChanged {
-                sourceTasks = displayedTasks
+                sourceTasks = loadedTasks
             }
             if projectsChanged {
                 projects = snapshot.projects
@@ -217,6 +328,10 @@ public final class AttentionConsole {
                 throw retryError
             }
         } catch {
+            guard refreshArchiveRevision == archiveMutationRevision else {
+                refreshRequested = true
+                return
+            }
             let message = error.localizedDescription
             if errorMessage != message {
                 errorMessage = message
@@ -238,10 +353,16 @@ public final class AttentionConsole {
         _ archived: Bool,
         for taskID: String
     ) async -> CodexTaskArchiveResult? {
+        archiveMutationRevision &+= 1
+        defer {
+            archiveMutationRevision &+= 1
+            if refreshInFlight { refreshRequested = true }
+        }
         do {
             let result = try await archiver.setArchived(archived, taskID: taskID)
             pendingArchiveTaskIDs = await archiver.pendingArchiveTaskIDs()
             if archived {
+                setFocusedTasks(focusedTaskIDs.filter { $0 != taskID })
                 if result == .completed {
                     sourceTasks.removeAll { $0.id == taskID }
                     lastUpdated = Date()
@@ -254,6 +375,33 @@ public final class AttentionConsole {
             errorMessage = error.localizedDescription
             return nil
         }
+    }
+
+    @discardableResult
+    public func undoArchive(
+        for taskID: String,
+        restoringFocusFrom previousFocusIDs: [String] = []
+    ) async -> Bool {
+        archiveMutationRevision &+= 1
+        defer {
+            archiveMutationRevision &+= 1
+            if refreshInFlight { refreshRequested = true }
+        }
+        let restoredTaskIDs: Set<String>
+        archiveUndosInFlight += 1
+        do {
+            // Polling must not classify restored tasks before Undo returns their IDs.
+            defer { archiveUndosInFlight -= 1 }
+            restoredTaskIDs = try await archiver.undoArchive(taskID: taskID)
+            restoredTaskIDsAwaitingSnapshot.formUnion(restoredTaskIDs)
+            pendingArchiveTaskIDs = await archiver.pendingArchiveTaskIDs()
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+        await refresh(showsActivity: false)
+        restoreFocusedTasks(restoredTaskIDs, from: previousFocusIDs)
+        return true
     }
 
     public func setTitle(_ title: String, for taskID: String) {
@@ -443,13 +591,14 @@ public final class AttentionConsole {
     public func setIncludedTaskKinds(_ kinds: Set<CodexTaskKind>) {
         guard includedTaskKinds != kinds else { return }
         includedTaskKinds = kinds
-        sourceTasks.removeAll { !kinds.contains($0.kind) }
         Task { await refresh() }
     }
 
     public func markInactiveAfterOpening(_ taskID: String) {
-        guard sourceTasks.first(where: { $0.id == taskID })?.status == .finished else { return }
-        ledger.acknowledgeFinished(taskID: taskID)
+        guard let task = sourceTasks.first(where: { $0.id == taskID }),
+              task.status == .finished
+        else { return }
+        ledger.acknowledgeFinished(taskID: taskID, finishedAt: task.finishedAt)
         storage.save(ledger)
     }
 

@@ -5,8 +5,10 @@ public struct VisibilityLedger: Codable, Equatable, Sendable {
     public private(set) var knownTaskIDs: Set<String>
     public private(set) var monitoredTaskIDs: Set<String>
     public private(set) var hiddenTaskIDs: Set<String>
+    public private(set) var focusedTaskIDs: [String]
     public private(set) var acknowledgedFinishedTaskIDs: Set<String>
     public private(set) var activeTaskIDs: Set<String>
+    private var acknowledgedFinishedDates: [String: Date]
 
     public init(
         isBootstrapped: Bool = false,
@@ -14,14 +16,18 @@ public struct VisibilityLedger: Codable, Equatable, Sendable {
         monitoredTaskIDs: Set<String> = [],
         hiddenTaskIDs: Set<String> = [],
         acknowledgedFinishedTaskIDs: Set<String> = [],
-        activeTaskIDs: Set<String> = []
+        activeTaskIDs: Set<String> = [],
+        focusedTaskIDs: [String] = []
     ) {
         self.isBootstrapped = isBootstrapped
         self.knownTaskIDs = knownTaskIDs
         self.monitoredTaskIDs = monitoredTaskIDs
         self.hiddenTaskIDs = hiddenTaskIDs
+        self.focusedTaskIDs = []
         self.acknowledgedFinishedTaskIDs = acknowledgedFinishedTaskIDs
         self.activeTaskIDs = activeTaskIDs
+        self.acknowledgedFinishedDates = [:]
+        setFocusedTasks(focusedTaskIDs)
     }
 
     public mutating func reconcile(with tasks: [CodexTask]) {
@@ -30,9 +36,20 @@ public struct VisibilityLedger: Codable, Equatable, Sendable {
     }
 
     public mutating func reconcileFinishedStates(with tasks: [CodexTask]) {
-        acknowledgedFinishedTaskIDs.subtract(
-            tasks.lazy.filter { $0.status != .finished }.map(\.id)
-        )
+        for task in tasks where acknowledgedFinishedTaskIDs.contains(task.id) {
+            let hasNewCompletion = task.finishedAt.map { finishedAt in
+                acknowledgedFinishedDates[task.id].map { finishedAt > $0 } ?? false
+            } ?? false
+            if task.status != .finished || hasNewCompletion {
+                acknowledgedFinishedTaskIDs.remove(task.id)
+                acknowledgedFinishedDates.removeValue(forKey: task.id)
+            } else if let finishedAt = task.finishedAt,
+                      acknowledgedFinishedDates[task.id] == nil
+            {
+                // Older ledgers and timestamp-less completions have no finish identity yet.
+                acknowledgedFinishedDates[task.id] = finishedAt
+            }
+        }
     }
 
     public mutating func reconcileMembership(
@@ -67,6 +84,7 @@ public struct VisibilityLedger: Codable, Equatable, Sendable {
         knownTaskIDs.insert(taskID)
         monitoredTaskIDs.remove(taskID)
         hiddenTaskIDs.insert(taskID)
+        focusedTaskIDs.removeAll { $0 == taskID }
     }
 
     public mutating func enable(taskID: String) {
@@ -79,8 +97,14 @@ public struct VisibilityLedger: Codable, Equatable, Sendable {
         monitoredTaskIDs.contains(taskID) && !hiddenTaskIDs.contains(taskID)
     }
 
-    public mutating func acknowledgeFinished(taskID: String) {
+    public mutating func setFocusedTasks(_ taskIDs: [String]) {
+        var seen: Set<String> = []
+        focusedTaskIDs = taskIDs.filter { isMonitored($0) && seen.insert($0).inserted }
+    }
+
+    public mutating func acknowledgeFinished(taskID: String, finishedAt: Date? = nil) {
         acknowledgedFinishedTaskIDs.insert(taskID)
+        acknowledgedFinishedDates[taskID] = finishedAt
     }
 
     public func isFinishedAcknowledged(_ taskID: String) -> Bool {
@@ -92,7 +116,9 @@ public struct VisibilityLedger: Codable, Equatable, Sendable {
         case knownTaskIDs
         case monitoredTaskIDs
         case hiddenTaskIDs
+        case focusedTaskIDs
         case acknowledgedFinishedTaskIDs
+        case acknowledgedFinishedDates
         case activeTaskIDs
     }
 
@@ -102,11 +128,17 @@ public struct VisibilityLedger: Codable, Equatable, Sendable {
         knownTaskIDs = try container.decodeIfPresent(Set<String>.self, forKey: .knownTaskIDs) ?? []
         monitoredTaskIDs = try container.decodeIfPresent(Set<String>.self, forKey: .monitoredTaskIDs) ?? []
         hiddenTaskIDs = try container.decodeIfPresent(Set<String>.self, forKey: .hiddenTaskIDs) ?? []
+        focusedTaskIDs = []
         acknowledgedFinishedTaskIDs = try container.decodeIfPresent(
             Set<String>.self,
             forKey: .acknowledgedFinishedTaskIDs
         ) ?? []
+        acknowledgedFinishedDates = try container.decodeIfPresent(
+            [String: Date].self,
+            forKey: .acknowledgedFinishedDates
+        ) ?? [:]
         activeTaskIDs = try container.decodeIfPresent(Set<String>.self, forKey: .activeTaskIDs) ?? []
+        setFocusedTasks(try container.decodeIfPresent([String].self, forKey: .focusedTaskIDs) ?? [])
     }
 
 }

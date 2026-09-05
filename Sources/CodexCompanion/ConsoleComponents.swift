@@ -595,6 +595,7 @@ struct ProjectSectionView: View {
     let expandedTaskIDs: Set<String>
     let allowsProjectReordering: Bool
     let isTaskMonitored: (String) -> Bool
+    let showsFocusMarkerForTask: (String) -> Bool
     let isArchivePending: (String) -> Bool
     let onToggle: () -> Void
     let onOpen: (CodexTask) -> Void
@@ -744,16 +745,18 @@ struct ProjectSectionView: View {
                 .accessibilityLabel("\(displayedProjectName), \(section.tasks.count) tasks")
                 .accessibilityValue(isCollapsed ? "Collapsed" : "Expanded")
 
-                Button(action: onNewTask) {
-                    Image(systemName: "plus")
-                        .consoleFont(size: 12, weight: .semibold)
-                        .foregroundStyle(ConsoleTheme.secondaryText)
-                        .frame(width: 30, height: 34)
-                        .contentShape(Rectangle())
+                if !section.isChat {
+                    Button(action: onNewTask) {
+                        Image(systemName: "plus")
+                            .consoleFont(size: 12, weight: .semibold)
+                            .foregroundStyle(ConsoleTheme.secondaryText)
+                            .frame(width: 30, height: 34)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Start a new task in \(displayedProjectName)")
+                    .accessibilityLabel("New task in \(displayedProjectName)")
                 }
-                .buttonStyle(.plain)
-                .help(section.isChat ? "Start a new chat" : "Start a new task in \(displayedProjectName)")
-                .accessibilityLabel(section.isChat ? "New chat" : "New task in \(displayedProjectName)")
 
                 if section.isChat || !allowsProjectReordering {
                     Color.clear
@@ -802,6 +805,7 @@ struct ProjectSectionView: View {
                         task: task,
                         isPreviewExpanded: expandedTaskIDs.contains(task.id),
                         isMonitored: isTaskMonitored(task.id),
+                        showsFocusMarker: showsFocusMarkerForTask(task.id),
                         isArchivePending: isArchivePending(task.id),
                         onOpen: { onOpen(task) },
                         onHide: { onHide(task) },
@@ -843,6 +847,7 @@ private struct TaskRow: View {
     let task: CodexTask
     let isPreviewExpanded: Bool
     let isMonitored: Bool
+    let showsFocusMarker: Bool
     let isArchivePending: Bool
     let onOpen: () -> Void
     let onHide: () -> Void
@@ -864,6 +869,7 @@ private struct TaskRow: View {
     @State private var isFlagPickerPresented = false
     @State private var isNoteEditorPresented = false
     @State private var isReminderEditorPresented = false
+    @State private var initialTitle = ""
     @State private var draftTitle = ""
     @State private var draftNote = ""
     @FocusState private var isTitleFocused: Bool
@@ -928,9 +934,23 @@ private struct TaskRow: View {
             .accessibilityHidden(task.status == .inactive)
 
             VStack(alignment: .leading, spacing: 2) {
-                titleControl
-                    .frame(height: 28)
-                    .padding(.trailing, 16)
+                HStack(spacing: 8) {
+                    titleControl
+
+                    if showsFocusMarker {
+                        Label("Focus", systemImage: "scope")
+                            .consoleFont(size: 11, weight: .medium)
+                            .foregroundStyle(ConsoleTheme.blue)
+                            .padding(.horizontal, 6)
+                            .frame(height: 20)
+                            .background(ConsoleTheme.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 5))
+                            .fixedSize()
+                            .help("Included in Focus")
+                            .accessibilityLabel("In Focus")
+                    }
+                }
+                .frame(height: 28)
+                .padding(.trailing, 16)
 
                 HStack(spacing: 8) {
                     TaskAgeLabel(createdAt: task.createdAt)
@@ -1310,16 +1330,17 @@ private struct TaskRow: View {
                 .frame(width: 25, height: 28)
         }
         .buttonStyle(.plain)
-        .help(isMonitored ? "Remove from Console" : "Add to Console")
+        .help(isMonitored ? "Unpin task" : "Pin task")
         .accessibilityLabel(
             isMonitored
-                ? "Remove \(task.title) from Console"
-                : "Add \(task.title) to Console"
+                ? "Unpin \(task.title)"
+                : "Pin \(task.title)"
         )
     }
 
     private func beginEditing() {
-        draftTitle = task.title
+        initialTitle = task.title
+        draftTitle = initialTitle
         isEditingTitle = true
         Task { @MainActor in
             isTitleFocused = true
@@ -1331,6 +1352,7 @@ private struct TaskRow: View {
         let title = draftTitle
         isEditingTitle = false
         isTitleFocused = false
+        guard title != initialTitle else { return }
         onRename(title)
     }
 
@@ -1590,7 +1612,7 @@ private struct StatusIcon: View {
     }
 }
 
-private struct StatusChip: View {
+struct StatusChip: View {
     let status: AttentionStatus
     let workingSince: Date?
 

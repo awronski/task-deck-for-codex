@@ -9,10 +9,6 @@ struct CodexDeepLinkLauncher {
         return NSWorkspace.shared.open(url)
     }
 
-    func startChat() {
-        NSWorkspace.shared.open(CodexDeepLink.newChat())
-    }
-
     func startTask(projectPath: String) {
         guard let url = CodexDeepLink.newTask(projectPath: projectPath) else { return }
         NSWorkspace.shared.open(url)

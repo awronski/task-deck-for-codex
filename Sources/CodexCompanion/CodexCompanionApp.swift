@@ -39,7 +39,8 @@ struct TaskDeckForCodexApp: App {
                 reminderStorage: reminderStorage,
                 projectOrderStorage: projectOrderStorage,
                 projectAppearanceStorage: projectAppearanceStorage,
-                renamer: repository
+                renamer: repository,
+                archiveStateReader: repository
             )
         )
     }

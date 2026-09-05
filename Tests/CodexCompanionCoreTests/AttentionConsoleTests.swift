@@ -522,10 +522,11 @@ struct AttentionConsoleTests {
         #expect(!console.isMonitored(task.id))
         #expect(await archiver.isArchived(task.id))
 
-        #expect(await console.setArchived(false, for: task.id) == .completed)
+        #expect(await console.undoArchive(for: task.id))
         #expect(console.allTasks.map(\.id) == [task.id])
         #expect(console.isMonitored(task.id))
         #expect(await !archiver.isArchived(task.id))
+        #expect(await archiver.undoneTaskIDs == [task.id])
     }
 
     @Test
@@ -549,7 +550,7 @@ struct AttentionConsoleTests {
         #expect(await console.setArchived(true, for: task.id) == .completed)
         #expect(console.allTasks.isEmpty)
 
-        #expect(await console.setArchived(false, for: task.id) == .completed)
+        #expect(await console.undoArchive(for: task.id))
         #expect(console.allTasks.map(\.id) == [task.id])
         #expect(!console.isMonitored(task.id))
     }
@@ -834,6 +835,36 @@ struct AttentionConsoleTests {
     }
 
     @Test
+    func undoKeepsARefreshFailureVisible() async {
+        let console = AttentionConsole(
+            loader: FailingTaskLoader(),
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+
+        #expect(await console.undoArchive(for: "task"))
+        #expect(console.errorMessage == "Could not reload tasks")
+    }
+
+    @Test
+    func failedUndoShowsTheArchiveError() async {
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: []),
+            archiver: FailingTestTaskArchiver(),
+            storage: TestVisibilityStorage(),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+
+        #expect(await !console.undoArchive(for: "task"))
+        #expect(console.errorMessage == "Codex archive failed")
+    }
+
+    @Test
     func pinnedTaskCustomTitleAndProjectOrderSurviveRelaunch() async {
         let task = codexTask(
             "task",
@@ -1003,6 +1034,34 @@ struct AttentionConsoleTests {
     }
 
     @Test
+    func filteringAnActiveTaskKindDoesNotChangeItsHiddenMembership() async {
+        let task = codexTask("regular", title: "Still working", status: .working)
+        let visibility = TestVisibilityStorage()
+        let console = AttentionConsole(
+            loader: StaticTaskLoader(tasks: [task]),
+            archiver: TestTaskArchiver(),
+            storage: visibility,
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage()
+        )
+        await console.refresh()
+        console.hide(task.id)
+        #expect(!console.isMonitored(task.id))
+
+        console.setIncludedTaskKinds([.agent])
+        await console.refresh()
+        #expect(console.allTasks.isEmpty)
+        #expect(visibility.load().activeTaskIDs == [task.id])
+
+        console.setIncludedTaskKinds(CodexTaskKind.defaultVisible)
+        await console.refresh()
+        #expect(console.allTasks.map(\.id) == [task.id])
+        #expect(!console.isMonitored(task.id))
+        #expect(visibility.load().hiddenTaskIDs == [task.id])
+    }
+
+    @Test
     func hiddenAgentTasksDoNotAffectAutomaticProjectOrder() async {
         let now = Date()
         let alphaRegular = codexTask(
@@ -1118,6 +1177,39 @@ struct AttentionConsoleTests {
     }
 
     @Test
+    func newerFinishNeedsAttentionWithoutAnIntermediateWorkingSnapshot() async {
+        let launchedAt = Date(timeIntervalSince1970: 1_000)
+        let first = codexTask(
+            "task",
+            title: "Repeated task",
+            status: .finished,
+            finishedAt: launchedAt.addingTimeInterval(1)
+        )
+        let second = codexTask(
+            first.id,
+            title: first.title,
+            status: .finished,
+            finishedAt: launchedAt.addingTimeInterval(2)
+        )
+        let console = AttentionConsole(
+            loader: SequenceTaskLoader(taskSets: [[first], [second]]),
+            archiver: TestTaskArchiver(),
+            storage: TestVisibilityStorage(ledger: VisibilityLedger(isBootstrapped: true)),
+            titleStorage: TestTaskTitleStorage(),
+            priorityStorage: TestTaskPriorityStorage(),
+            projectOrderStorage: TestProjectOrderStorage(),
+            launchedAt: launchedAt
+        )
+        await console.refresh()
+        console.markInactiveAfterOpening(first.id)
+        #expect(console.allTasks.first?.status == .inactive)
+
+        await console.refresh()
+        #expect(console.allTasks.first?.status == .finished)
+        #expect(console.allTasks.first?.finishedAt == second.finishedAt)
+    }
+
+    @Test
     func taskCompletedBeforeLaunchStartsInactiveDespiteNewerDatabaseRecency() async {
         let launchedAt = Date(timeIntervalSince1970: 1_000)
         let finishedTask = codexTask(
@@ -1213,16 +1305,22 @@ struct AttentionConsoleTests {
 
 private struct StaticTaskLoader: CodexTaskLoading {
     let tasks: [CodexTask]
-    func loadSnapshot(including kinds: Set<CodexTaskKind>) async throws -> CodexTaskSnapshot {
+    func loadSnapshot(
+        including kinds: Set<CodexTaskKind>,
+        alwaysIncluding taskIDs: Set<String>
+    ) async throws -> CodexTaskSnapshot {
         snapshot(
-            for: tasks.filter { kinds.contains($0.kind) },
+            for: tasks.filter { kinds.contains($0.kind) || taskIDs.contains($0.id) },
             allTasks: tasks
         )
     }
 }
 
 private struct FailingTaskLoader: CodexTaskLoading {
-    func loadSnapshot(including kinds: Set<CodexTaskKind>) async throws -> CodexTaskSnapshot {
+    func loadSnapshot(
+        including kinds: Set<CodexTaskKind>,
+        alwaysIncluding taskIDs: Set<String>
+    ) async throws -> CodexTaskSnapshot {
         throw TestLoaderError()
     }
 }
@@ -1238,17 +1336,21 @@ private actor SequenceTaskLoader: CodexTaskLoading {
         self.taskSets = taskSets
     }
 
-    func loadSnapshot(including kinds: Set<CodexTaskKind>) async throws -> CodexTaskSnapshot {
+    func loadSnapshot(
+        including kinds: Set<CodexTaskKind>,
+        alwaysIncluding taskIDs: Set<String>
+    ) async throws -> CodexTaskSnapshot {
         let tasks = taskSets.count > 1 ? taskSets.removeFirst() : taskSets.first ?? []
         return snapshot(
-            for: tasks.filter { kinds.contains($0.kind) },
+            for: tasks.filter { kinds.contains($0.kind) || taskIDs.contains($0.id) },
             allTasks: tasks
         )
     }
 }
 
-private actor TestTaskArchiver: CodexTaskArchiving {
+private actor TestTaskArchiver: CodexTaskArchiving, CodexTaskArchiveUndoing {
     private var archivedTaskIDs: Set<String> = []
+    private(set) var undoneTaskIDs: [String] = []
 
     func setArchived(
         _ archived: Bool,
@@ -1265,9 +1367,15 @@ private actor TestTaskArchiver: CodexTaskArchiving {
     func isArchived(_ taskID: String) -> Bool {
         archivedTaskIDs.contains(taskID)
     }
+
+    @discardableResult
+    func undoArchive(taskID: String) -> Set<String> {
+        undoneTaskIDs.append(taskID)
+        return archivedTaskIDs.remove(taskID) == nil ? [] : [taskID]
+    }
 }
 
-private actor DeferredTestTaskArchiver: CodexTaskArchiving {
+private actor DeferredTestTaskArchiver: CodexTaskArchiving, CodexTaskArchiveUndoing {
     private var pendingTaskIDs: Set<String>
 
     init(pendingTaskIDs: Set<String> = []) {
@@ -1289,13 +1397,23 @@ private actor DeferredTestTaskArchiver: CodexTaskArchiving {
     func pendingArchiveTaskIDs() async -> Set<String> {
         pendingTaskIDs
     }
+
+    @discardableResult
+    func undoArchive(taskID: String) -> Set<String> {
+        pendingTaskIDs.remove(taskID) == nil ? [] : [taskID]
+    }
 }
 
-private actor FailingTestTaskArchiver: CodexTaskArchiving {
+private actor FailingTestTaskArchiver: CodexTaskArchiving, CodexTaskArchiveUndoing {
     func setArchived(
         _ archived: Bool,
         taskID: String
     ) throws -> CodexTaskArchiveResult {
+        throw TestArchiveError()
+    }
+
+    @discardableResult
+    func undoArchive(taskID: String) throws -> Set<String> {
         throw TestArchiveError()
     }
 }
@@ -1304,7 +1422,7 @@ private struct TestArchiveError: LocalizedError {
     var errorDescription: String? { "Codex archive failed" }
 }
 
-private actor RetryRecordingTaskArchiver: CodexTaskArchiving {
+private actor RetryRecordingTaskArchiver: CodexTaskArchiving, CodexTaskArchiveUndoing {
     private(set) var retryAttempts = 0
     private let error: (any Error)?
 
@@ -1323,9 +1441,12 @@ private actor RetryRecordingTaskArchiver: CodexTaskArchiving {
         retryAttempts += 1
         if let error { throw error }
     }
+
+    @discardableResult
+    func undoArchive(taskID: String) -> Set<String> { [] }
 }
 
-private actor RetryCompletingTaskArchiver: CodexTaskArchiving {
+private actor RetryCompletingTaskArchiver: CodexTaskArchiving, CodexTaskArchiveUndoing {
     private var pendingTaskIDs: Set<String>
 
     init(pendingTaskIDs: Set<String>) {
@@ -1350,6 +1471,11 @@ private actor RetryCompletingTaskArchiver: CodexTaskArchiving {
 
     func pendingArchiveTaskIDs() async -> Set<String> {
         pendingTaskIDs
+    }
+
+    @discardableResult
+    func undoArchive(taskID: String) -> Set<String> {
+        pendingTaskIDs.remove(taskID) == nil ? [] : [taskID]
     }
 }
 

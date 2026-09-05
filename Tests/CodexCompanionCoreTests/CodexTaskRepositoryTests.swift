@@ -739,6 +739,42 @@ struct CodexTaskRepositoryTests {
     }
 
     @Test
+    func readsExactArchiveStatesAcrossTheSubtreeWithoutInventingMissingRows() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let rootID = UUID().uuidString.lowercased()
+        let childID = UUID().uuidString.lowercased()
+        let archivedID = UUID().uuidString.lowercased()
+        let missingID = UUID().uuidString.lowercased()
+        try fixture.writeDatabase(rows: [
+            .init(id: rootID, title: "Root", cwd: "/tmp", rolloutPath: nil),
+            .init(id: childID, title: "Child", cwd: "/tmp", rolloutPath: nil),
+            .init(id: archivedID, title: "Already archived", cwd: "/tmp", rolloutPath: nil)
+        ])
+        try fixture.writeSpawnEdges([
+            (parent: rootID, child: childID),
+            (parent: childID, child: archivedID),
+            (parent: rootID, child: missingID)
+        ])
+        try fixture.setDatabaseArchived(true, taskID: archivedID)
+
+        #expect(try await fixture.repository().archiveStatesInSubtree(taskID: rootID) == [
+            rootID: false, childID: false, archivedID: true
+        ])
+        #expect(try await fixture.repository().archiveStatesInSubtree(taskID: missingID).isEmpty)
+    }
+
+    @Test
+    func readsRootArchiveStateWithALegacyDatabaseWithoutSpawnEdges() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let taskID = UUID().uuidString.lowercased()
+        try fixture.writeDatabaseWithoutSpawnEdges(taskID: taskID)
+
+        #expect(try await fixture.repository().archiveStatesInSubtree(taskID: taskID) == [taskID: false])
+    }
+
+    @Test
     func usesSharedAppServerToArchiveAndRestoreTask() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.remove() }
@@ -1469,6 +1505,69 @@ struct CodexTaskRepositoryTests {
         #expect(defaultSnapshot.tasks.isEmpty)
         #expect(agentSnapshot.tasks.map(\.id) == [guardianID])
         #expect(agentSnapshot.tasks.first?.kind == .agent)
+    }
+
+    @Test(arguments: [Set<CodexTaskKind>(), CodexTaskKind.defaultVisible, [.unassigned]])
+    func explicitlyIncludedTasksSurviveKindFiltersWithoutLoadingOtherOptionalTasks(
+        includedKinds: Set<CodexTaskKind>
+    ) async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let regularID = UUID().uuidString.lowercased()
+        let pinnedAgentID = UUID().uuidString.lowercased()
+        let otherAgentID = UUID().uuidString.lowercased()
+        let pinnedUnassignedID = UUID().uuidString.lowercased()
+        let archivedAgentID = UUID().uuidString.lowercased()
+        try fixture.writeCatalog(
+            projects: [(id: "one", name: "Project One", path: "/Users/test/code/one")],
+            assignments: [regularID: "one", pinnedAgentID: "one", otherAgentID: "one", archivedAgentID: "one"]
+        )
+        try fixture.writeDatabase(rows: [
+            .init(id: regularID, title: "Regular", cwd: "/Users/test/code/one", rolloutPath: nil),
+            .init(
+                id: pinnedAgentID, title: "Pinned agent", cwd: "/Users/test/code/one", rolloutPath: nil,
+                source: #"{"subagent":{"other":"guardian"}}"#, threadSource: "subagent"
+            ),
+            .init(
+                id: otherAgentID, title: "Other agent", cwd: "/Users/test/code/one", rolloutPath: nil,
+                source: #"{"subagent":{"other":"guardian"}}"#, threadSource: "subagent"
+            ),
+            .init(id: pinnedUnassignedID, title: "Pinned unassigned", cwd: "/tmp/outside", rolloutPath: nil),
+            .init(
+                id: archivedAgentID, title: "Archived agent", cwd: "/Users/test/code/one", rolloutPath: nil,
+                source: #"{"subagent":{"other":"guardian"}}"#, threadSource: "subagent"
+            )
+        ])
+        try fixture.setDatabaseArchived(true, taskID: archivedAgentID)
+        let repository = fixture.repository()
+        let explicitIDs = Set([pinnedAgentID, pinnedUnassignedID, archivedAgentID].map { $0.uppercased() })
+        let expectedIDs: Set<String> = includedKinds.contains(.regular)
+            ? [regularID, pinnedAgentID, pinnedUnassignedID]
+            : [pinnedAgentID, pinnedUnassignedID]
+
+        let snapshot = try await repository.loadSnapshot(including: includedKinds, alwaysIncluding: explicitIDs)
+
+        #expect(Set(snapshot.tasks.map(\.id)) == expectedIDs)
+        #expect(snapshot.tasks.first(where: { $0.id == pinnedAgentID })?.kind == .agent)
+        #expect(snapshot.tasks.first(where: { $0.id == pinnedUnassignedID })?.kind == .unassigned)
+
+        try fixture.addModelMetadataColumns()
+        let migratedSnapshot = try await repository.loadSnapshot(
+            including: includedKinds,
+            alwaysIncluding: explicitIDs
+        )
+        #expect(Set(migratedSnapshot.tasks.map(\.id)) == expectedIDs)
+    }
+
+    @Test
+    func rejectsInvalidExplicitTaskIDsBeforeBuildingTheSnapshotQuery() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let invalidID = "' OR 1 = 1 --"
+
+        await #expect(throws: CodexRepositoryError.invalidTaskID(invalidID)) {
+            try await fixture.repository().loadSnapshot(including: [], alwaysIncluding: [invalidID])
+        }
     }
 
     @Test

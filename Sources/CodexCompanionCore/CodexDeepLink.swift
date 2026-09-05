@@ -6,13 +6,6 @@ public enum CodexDeepLink {
         return URL(string: "codex://threads/\(id)")
     }
 
-    public static func newChat(homeDirectory: String = NSHomeDirectory()) -> URL {
-        let chatsPath = URL(fileURLWithPath: homeDirectory)
-            .appendingPathComponent("Documents/Codex", isDirectory: true)
-            .standardizedFileURL.path
-        return newTask(projectPath: chatsPath)!
-    }
-
     public static func newTask(projectPath: String) -> URL? {
         guard projectPath.hasPrefix("/") else { return nil }
         var components = URLComponents()

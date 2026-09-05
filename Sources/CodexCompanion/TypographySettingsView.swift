@@ -3,6 +3,7 @@ import SwiftUI
 
 struct TypographySettingsView: View {
     @AppStorage("automaticallySortProjects") private var automaticallySortProjects = false
+    @AppStorage("automaticallyFocusStartedTasks") private var automaticallyFocusStartedTasks = true
     @AppStorage("syncTaskTitlesToCodex") private var syncTaskTitlesToCodex = false
     @AppStorage("showTaskModelDetails") private var showTaskModelDetails = false
     @AppStorage("consoleFontFamily") private var fontFamily = ConsoleFontFamily.system.rawValue
@@ -37,6 +38,14 @@ struct TypographySettingsView: View {
                     title: "Organization",
                     systemImage: "arrow.up.arrow.down"
                 ) {
+                    SettingsToggle(
+                        title: "Automatically add started tasks to Focus",
+                        description: "Add new and resumed pinned tasks to Focus as they appear. Keep your existing selection and order.",
+                        isOn: $automaticallyFocusStartedTasks
+                    )
+
+                    Divider()
+
                     SettingsToggle(
                         title: "Automatically sort projects",
                         description: "Show active work first, then order projects and tasks by their most recent interaction.",

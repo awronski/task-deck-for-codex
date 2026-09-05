@@ -7,6 +7,13 @@ struct AttentionConsoleView: View {
 
     @AppStorage("automaticallySortProjects") private var automaticallySortProjects = false
     @AppStorage("syncTaskTitlesToCodex") private var syncTaskTitlesToCodex = false
+    @AppStorage("automaticallyFocusStartedTasks") private var automaticallyFocusStartedTasks = true
+
+    private enum TaskScope: String, Hashable {
+        case focus
+        case pinned
+        case allTasks
+    }
 
     private enum UndoOperation: Equatable {
         case consoleRemoval
@@ -18,6 +25,7 @@ struct AttentionConsoleView: View {
         let taskID: String
         let title: String
         let operation: UndoOperation
+        let focusedTaskIDs: [String]
         let token: UUID
     }
 
@@ -25,23 +33,58 @@ struct AttentionConsoleView: View {
     @State private var selectedProjectIDs: Set<String> = []
     @State private var selectedStatuses: Set<AttentionStatus> = []
     @State private var collapsedProjects: Set<String> = []
+    @State private var collapsedFocusProjects: Set<String> = []
     @State private var expandedTaskIDs: Set<String> = []
-    @State private var isShowingLibrary = false
+    @AppStorage("taskListScope") private var scope = TaskScope.pinned
     @State private var isShowingFilters = false
+    @State private var isShowingFocusPicker = false
+    @State private var isShowingOutsideAttention = false
     @State private var undoNotice: UndoNotice?
 
     private let launcher = CodexDeepLinkLauncher()
 
     private var sourceTasks: [CodexTask] {
-        isShowingLibrary ? console.allTasks : console.monitoredTasks
+        switch scope {
+        case .focus: console.focusedTasks
+        case .pinned: console.monitoredTasks
+        case .allTasks: console.allTasks
+        }
+    }
+
+    private var hasAvailableTasks: Bool {
+        scope == .focus ? !console.focusedTasks.isEmpty : !console.allTasks.isEmpty
+    }
+
+    private var projectDisplayNames: [String: String] {
+        console.projectAppearances.compactMapValues(\.displayName)
     }
 
     private var sections: [ProjectSection] {
+        if scope == .focus {
+            var projectIDs: [String] = []
+            var tasksByProject: [String: [CodexTask]] = [:]
+            for task in sourceTasks {
+                if tasksByProject[task.projectKey] == nil {
+                    projectIDs.append(task.projectKey)
+                }
+                tasksByProject[task.projectKey, default: []].append(task)
+            }
+            return projectIDs.compactMap { projectID in
+                guard let tasks = tasksByProject[projectID], let first = tasks.first else { return nil }
+                return ProjectSection(
+                    id: projectID,
+                    name: first.projectName,
+                    path: first.projectPath,
+                    isChat: first.isChat,
+                    tasks: tasks
+                )
+            }
+        }
         let groupedSections = TaskGrouping.sections(
             from: sourceTasks,
             includingEmptyProjects: console.projects.filter(\.isChat),
             matching: searchText,
-            projectDisplayNames: console.projectAppearances.compactMapValues(\.displayName),
+            projectDisplayNames: projectDisplayNames,
             projectIDs: selectedProjectIDs,
             statuses: selectedStatuses
         )
@@ -74,7 +117,7 @@ struct AttentionConsoleView: View {
     private var visiblePreviewTaskIDs: Set<String> {
         Set(
             sections
-                .filter { !collapsedProjects.contains($0.id) }
+                .filter { !isCollapsed($0.id) }
                 .flatMap(\.tasks)
                 .filter { $0.status != .inactive && $0.activity != nil }
                 .map(\.id)
@@ -83,7 +126,7 @@ struct AttentionConsoleView: View {
 
     private var availablePreviewTaskIDs: Set<String> {
         Set(
-            console.allTasks
+            (console.allTasks + console.focusedTasks)
                 .filter { $0.status != .inactive && $0.activity != nil }
                 .map(\.id)
         )
@@ -144,8 +187,23 @@ struct AttentionConsoleView: View {
                 controlRow(width: geometry.size.width)
                 Rectangle().fill(ConsoleTheme.divider).frame(height: 1)
 
-                if let error = console.errorMessage, !console.allTasks.isEmpty {
+                if let error = console.errorMessage, hasAvailableTasks {
                     ErrorStrip(message: error)
+                }
+
+                if scope == .focus, !console.outsideFocusAttentionTasks.isEmpty {
+                    HStack {
+                        let count = console.outsideFocusAttentionTasks.count
+                        Button("\(count) other \(count == 1 ? "task needs" : "tasks need") you") {
+                            isShowingOutsideAttention = true
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(ConsoleTheme.secondaryText)
+                        Spacer()
+                    }
+                    .consoleFont(size: 12)
+                    .padding(.horizontal, 14)
+                    .frame(height: 30)
                 }
 
                 if let reminder = console.currentTriggeredReminder {
@@ -197,8 +255,36 @@ struct AttentionConsoleView: View {
                 }
             }
         }
-        .onAppear { console.start() }
+        .onAppear {
+            console.automaticallyFocusStartedTasks = automaticallyFocusStartedTasks
+            console.start()
+        }
         .onDisappear { console.stop() }
+        .onChange(of: automaticallyFocusStartedTasks) { _, isEnabled in
+            console.automaticallyFocusStartedTasks = isEnabled
+        }
+        .sheet(isPresented: $isShowingFocusPicker) {
+            FocusTaskPicker(
+                candidates: console.focusCandidates,
+                focusedTaskIDs: console.focusedTaskIDs,
+                projectDisplayNames: projectDisplayNames
+            ) { taskIDs in
+                console.setFocusedTasks(taskIDs)
+                collapsedFocusProjects.removeAll()
+            }
+        }
+        .sheet(isPresented: $isShowingOutsideAttention) {
+            OutsideFocusAttentionView(
+                tasks: console.outsideFocusAttentionTasks,
+                projectDisplayNames: projectDisplayNames
+            ) { task in
+                open(task)
+                isShowingOutsideAttention = false
+            }
+        }
+        .onChange(of: scope) { _, _ in
+            isShowingFilters = false
+        }
         .onChange(of: console.reminderSoundSequence) { _, _ in
             playReminderSound()
         }
@@ -224,10 +310,24 @@ struct AttentionConsoleView: View {
 
     private func controlRow(width: CGFloat) -> some View {
         HStack(spacing: 8) {
-            SearchField(text: $searchText)
-                .frame(maxWidth: .infinity)
+            if scope == .focus {
+                Text("\(console.focusedTasks.count) focused \(console.focusedTasks.count == 1 ? "task" : "tasks")")
+                    .consoleFont(size: 14, weight: .medium)
+                    .foregroundStyle(ConsoleTheme.primaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                SearchField(text: $searchText)
+                    .frame(maxWidth: .infinity)
+            }
             activityExpansionButton
-            filterButton(showSummary: width >= 430)
+            if scope == .focus {
+                Button("Edit focus") { isShowingFocusPicker = true }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .frame(height: 31)
+            } else {
+                filterButton(showSummary: width >= 430)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
@@ -483,37 +583,31 @@ struct AttentionConsoleView: View {
         }
     }
 
+    @ViewBuilder
     private var newTaskMenu: some View {
-        Menu {
-            Button {
-                launcher.startChat()
-            } label: {
-                Label("New Chat", systemImage: "bubble.left")
-            }
-
-            let projects = projectOptions.filter { !$0.isChat }
-            if !projects.isEmpty {
-                Divider()
+        let projects = projectOptions.filter { !$0.isChat }
+        if !projects.isEmpty {
+            Menu {
                 ForEach(projects) { project in
                     Button(displayedName(for: project)) {
                         launcher.startTask(projectPath: project.path)
                     }
                 }
+            } label: {
+                Image(systemName: "plus")
+                    .consoleFont(size: 17, weight: .medium)
+                    .foregroundStyle(ConsoleTheme.primaryText)
+                    .frame(width: 34, height: 34)
             }
-        } label: {
-            Image(systemName: "plus")
-                .consoleFont(size: 17, weight: .medium)
-                .foregroundStyle(ConsoleTheme.primaryText)
-                .frame(width: 34, height: 34)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .frame(width: 34, height: 34)
+            .background(Color.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.22)))
+            .help("Start a new task")
+            .accessibilityLabel("New task")
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .frame(width: 34, height: 34)
-        .background(Color.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.22)))
-        .help("Start a new task")
-        .accessibilityLabel("New task")
     }
 
     private var settingsButton: some View {
@@ -541,7 +635,7 @@ struct AttentionConsoleView: View {
                     .foregroundStyle(ConsoleTheme.secondaryText)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let error = console.errorMessage, console.allTasks.isEmpty {
+        } else if let error = console.errorMessage, !hasAvailableTasks {
             ContentUnavailableView {
                 Label("Codex tasks unavailable", systemImage: "exclamationmark.triangle")
             } description: {
@@ -562,17 +656,20 @@ struct AttentionConsoleView: View {
                         ProjectSectionView(
                             section: section,
                             appearance: appearance,
-                            isCollapsed: collapsedProjects.contains(section.id),
+                            isCollapsed: isCollapsed(section.id),
                             expandedTaskIDs: expandedTaskIDs,
-                            allowsProjectReordering: !automaticallySortProjects,
+                            allowsProjectReordering: scope != .focus && !automaticallySortProjects,
                             isTaskMonitored: console.isMonitored,
+                            showsFocusMarkerForTask: { taskID in
+                                scope != .focus && console.focusedTaskIDs.contains(taskID)
+                            },
                             isArchivePending: console.pendingArchiveTaskIDs.contains,
                             onToggle: { toggle(section.id) },
                             onOpen: open,
                             onHide: removeFromConsole,
                             onEnable: addToConsole,
                             onArchive: archive,
-                            onNewTask: { startTask(in: section) },
+                            onNewTask: { launcher.startTask(projectPath: section.path) },
                             onMoveProject: moveProject,
                             onRename: { taskID, title in
                                 Task {
@@ -609,23 +706,34 @@ struct AttentionConsoleView: View {
         }
     }
 
+    @ViewBuilder
     private var emptyState: some View {
-        ContentUnavailableView {
-            Label(
-                hasFilterCriteria
-                    ? "No matching tasks"
-                    : (isShowingLibrary ? "No Codex tasks" : "Your console is clear"),
-                systemImage: hasFilterCriteria ? "line.3.horizontal.decrease.circle" : "checkmark.circle"
-            )
-        } description: {
-            if !hasFilterCriteria && !isShowingLibrary {
-                Text("New and resumed Codex tasks will appear here automatically.")
-            } else if hasFilterCriteria {
-                Text("Try another search or clear some filters.")
+        if scope == .focus {
+            ContentUnavailableView {
+                Label("Choose your focus", systemImage: "scope")
+            } description: {
+                Text("Select the pinned tasks you want to concentrate on now.")
+            } actions: {
+                Button("Choose tasks") { isShowingFocusPicker = true }
             }
-        } actions: {
-            if activeFilterCount > 0 {
-                Button("Clear filters", action: clearFilters)
+        } else {
+            ContentUnavailableView {
+                Label(
+                    hasFilterCriteria
+                        ? "No matching tasks"
+                        : (scope == .allTasks ? "No Codex tasks" : "No pinned tasks"),
+                    systemImage: hasFilterCriteria ? "line.3.horizontal.decrease.circle" : "checkmark.circle"
+                )
+            } description: {
+                if !hasFilterCriteria && scope == .pinned {
+                    Text("New and resumed Codex tasks will appear here automatically.")
+                } else if hasFilterCriteria {
+                    Text("Try another search or clear some filters.")
+                }
+            } actions: {
+                if activeFilterCount > 0 {
+                    Button("Clear filters", action: clearFilters)
+                }
             }
         }
     }
@@ -652,7 +760,7 @@ struct AttentionConsoleView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .fixedSize()
-                .help(isArchive ? "Restore task" : "Add back to Console")
+                .help(isArchive ? "Restore task" : "Pin task again")
                 .accessibilityLabel("Undo \(isArchive ? "archive" : "removal") of \(notice.title)")
         }
         .consoleFont(size: 12.5)
@@ -664,14 +772,15 @@ struct AttentionConsoleView: View {
 
     private var consoleFooter: some View {
         ZStack {
-            Picker("Task list", selection: $isShowingLibrary) {
-                Label("Console", systemImage: "pin.fill").tag(false)
-                Label("All Tasks", systemImage: "tray.full").tag(true)
+            Picker("Task list", selection: $scope) {
+                Label("Focus", systemImage: "scope").tag(TaskScope.focus)
+                Label("Pinned", systemImage: "pin.fill").tag(TaskScope.pinned)
+                Label("All Tasks", systemImage: "tray.full").tag(TaskScope.allTasks)
             }
             .pickerStyle(.segmented)
             .controlSize(.large)
             .labelsHidden()
-            .frame(width: 170)
+            .frame(width: 265)
             .accessibilityLabel("Task list mode")
 
             HStack(spacing: 8) {
@@ -703,11 +812,25 @@ struct AttentionConsoleView: View {
     }
 
     private func toggle(_ projectID: String) {
+        if scope == .focus {
+            if collapsedFocusProjects.contains(projectID) {
+                collapsedFocusProjects.remove(projectID)
+            } else {
+                collapsedFocusProjects.insert(projectID)
+            }
+            return
+        }
         if collapsedProjects.contains(projectID) {
             collapsedProjects.remove(projectID)
         } else {
             collapsedProjects.insert(projectID)
         }
+    }
+
+    private func isCollapsed(_ projectID: String) -> Bool {
+        scope == .focus
+            ? collapsedFocusProjects.contains(projectID)
+            : collapsedProjects.contains(projectID)
     }
 
     private func togglePreview(_ taskID: String) {
@@ -731,11 +854,13 @@ struct AttentionConsoleView: View {
     }
 
     private func removeFromConsole(_ task: CodexTask) {
+        let focusedTaskIDs = console.focusedTaskIDs
         console.hide(task.id)
         showUndoNotice(UndoNotice(
             taskID: task.id,
             title: task.title,
             operation: .consoleRemoval,
+            focusedTaskIDs: focusedTaskIDs,
             token: UUID()
         ))
     }
@@ -747,6 +872,7 @@ struct AttentionConsoleView: View {
     }
 
     private func archive(_ task: CodexTask) {
+        let focusedTaskIDs = console.focusedTaskIDs
         Task { @MainActor in
             if console.pendingArchiveTaskIDs.contains(task.id) {
                 guard await console.setArchived(false, for: task.id) != nil else { return }
@@ -763,6 +889,7 @@ struct AttentionConsoleView: View {
                 taskID: task.id,
                 title: task.title,
                 operation: result == .deferred ? .queuedArchive : .archive,
+                focusedTaskIDs: focusedTaskIDs,
                 token: UUID()
             ))
         }
@@ -772,6 +899,7 @@ struct AttentionConsoleView: View {
         switch notice.operation {
         case .consoleRemoval:
             console.enable(notice.taskID)
+            console.restoreFocusedTasks([notice.taskID], from: notice.focusedTaskIDs)
             clearUndoNotice(notice)
         case .archive, .queuedArchive:
             guard undoNotice?.token == notice.token else { return }
@@ -779,11 +907,15 @@ struct AttentionConsoleView: View {
                 taskID: notice.taskID,
                 title: notice.title,
                 operation: notice.operation,
+                focusedTaskIDs: notice.focusedTaskIDs,
                 token: UUID()
             )
             undoNotice = pendingNotice
             Task { @MainActor in
-                guard await console.setArchived(false, for: notice.taskID) != nil else { return }
+                guard await console.undoArchive(
+                    for: notice.taskID,
+                    restoringFocusFrom: notice.focusedTaskIDs
+                ) else { return }
                 clearUndoNotice(pendingNotice)
             }
         }
@@ -808,7 +940,7 @@ struct AttentionConsoleView: View {
     }
 
     private func moveProject(_ sourceID: String, _ targetID: String, _ insertAfter: Bool) -> Bool {
-        guard !automaticallySortProjects else { return false }
+        guard scope != .focus, !automaticallySortProjects else { return false }
         let projectsByID = Dictionary(uniqueKeysWithValues: console.projects.map { ($0.key, $0) })
         guard let source = projectsByID[sourceID],
               projectsByID[targetID] != nil,
@@ -856,11 +988,4 @@ struct AttentionConsoleView: View {
         }
     }
 
-    private func startTask(in section: ProjectSection) {
-        if section.isChat {
-            launcher.startChat()
-        } else {
-            launcher.startTask(projectPath: section.path)
-        }
-    }
 }

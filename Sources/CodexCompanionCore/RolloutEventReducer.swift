@@ -149,7 +149,27 @@ public struct RolloutEventReducer: Equatable, Sendable {
             }
 
         case "agent_message":
-            recordAgentMessage(payload, occurredAt: envelopeDate(envelope))
+            recordAgentMessage(
+                payload["message"],
+                phase: payload["phase"] as? String,
+                occurredAt: envelopeDate(envelope)
+            )
+
+        case "item_completed":
+            guard envelopeType == "event_msg",
+                  let item = payload["item"] as? [String: Any],
+                  item["type"] as? String == "AgentMessage",
+                  let content = item["content"] as? [[String: Any]]
+            else { return }
+            let message = content.compactMap { block -> String? in
+                guard block["type"] as? String == "Text" else { return nil }
+                return block["text"] as? String
+            }.joined(separator: "\n")
+            recordAgentMessage(
+                message,
+                phase: item["phase"] as? String,
+                occurredAt: envelopeDate(envelope)
+            )
 
         case "function_call", "custom_tool_call":
             recordPendingCall(payload)
@@ -188,11 +208,12 @@ public struct RolloutEventReducer: Equatable, Sendable {
         )
     }
 
-    private mutating func recordAgentMessage(_ payload: [String: Any], occurredAt: Date?) {
-        guard let message = cleanText(payload["message"]) else { return }
-        switch payload["phase"] as? String {
+    private mutating func recordAgentMessage(_ value: Any?, phase: String?, occurredAt: Date?) {
+        guard let message = cleanText(value) else { return }
+        switch phase {
         case "commentary":
-            if let latestNarration, latestNarration != message {
+            guard latestNarration != message else { return }
+            if let latestNarration {
                 recordRecent(latestNarration, occurredAt: latestNarrationAt)
             }
             latestNarration = message

@@ -23,16 +23,4 @@ struct CodexDeepLinkTests {
         #expect(CodexDeepLink.newTask(projectPath: "relative/path") == nil)
     }
 
-    @Test
-    func newChatTargetsTheChatsWorkspace() {
-        let components = URLComponents(
-            url: CodexDeepLink.newChat(homeDirectory: "/Users/test"),
-            resolvingAgainstBaseURL: false
-        )
-
-        #expect(components?.scheme == "codex")
-        #expect(components?.host == "threads")
-        #expect(components?.path == "/new")
-        #expect(components?.queryItems?.first?.value == "/Users/test/Documents/Codex")
-    }
 }

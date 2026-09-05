@@ -138,6 +138,99 @@ struct RolloutEventReducerTests {
     }
 
     @Test
+    func completedAgentItemsProvideCommentaryAndFinalSummaries() {
+        var reducer = RolloutEventReducer()
+        reducer.consume(line: event("event_msg", ["type": "task_started"]))
+        reducer.consume(line: event("event_msg", [
+            "type": "item_completed",
+            "item": [
+                "type": "AgentMessage",
+                "id": "commentary-1",
+                "phase": "commentary",
+                "content": [
+                    ["type": "Text", "text": "Inspecting the **current** format."],
+                    ["type": "Text", "text": "Checking the activity preview."],
+                    ["type": "Image", "text": "Not narration"]
+                ]
+            ]
+        ], timestamp: "2026-09-05T07:54:09.256Z"))
+
+        #expect(reducer.status == .working)
+        #expect(reducer.activity?.headline == "Inspecting the current format. Checking the activity preview.")
+
+        reducer.consume(line: completedAgentMessage(
+            "The activity preview is ready.",
+            phase: "final_answer",
+            timestamp: "2026-09-05T07:55:00.000Z"
+        ))
+        reducer.consume(line: event("event_msg", ["type": "task_complete"], timestamp: "2026-09-05T07:55:01.000Z"))
+
+        #expect(reducer.status == .finished)
+        #expect(reducer.activity?.headline == "The activity preview is ready.")
+        #expect(reducer.activity?.recentEvents.map(\.title) == [
+            "Inspecting the current format. Checking the activity preview."
+        ])
+    }
+
+    @Test
+    func duplicateModernAndLegacyNarrationKeepsTheOriginalTimestamp() throws {
+        var reducer = RolloutEventReducer()
+        let firstTimestamp = "2026-09-05T07:54:09.256Z"
+        let firstDate = try Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(firstTimestamp)
+        reducer.consume(line: event("event_msg", ["type": "task_started"]))
+        reducer.consume(line: completedAgentMessage("Inspecting the task.", timestamp: firstTimestamp))
+        reducer.consume(line: event("event_msg", [
+            "type": "agent_message",
+            "phase": "commentary",
+            "message": "Inspecting the task."
+        ], timestamp: "2026-09-05T07:54:10.000Z"))
+
+        #expect(reducer.activity?.recentEvents.isEmpty == true)
+
+        reducer.consume(line: completedAgentMessage(
+            "Checking the result.",
+            timestamp: "2026-09-05T07:55:00.000Z"
+        ))
+        #expect(reducer.activity?.recentEvents.count == 1)
+        #expect(reducer.activity?.recentEvents.first?.occurredAt == firstDate)
+
+        reducer.consume(line: completedAgentMessage(
+            "The task is ready.",
+            phase: "final_answer",
+            timestamp: "2026-09-05T07:56:00.000Z"
+        ))
+        reducer.consume(line: event("event_msg", [
+            "type": "agent_message",
+            "phase": "final_answer",
+            "message": "The task is ready."
+        ]))
+        reducer.consume(line: event("event_msg", ["type": "task_complete", "last_agent_message": "The task is ready."]))
+        #expect(reducer.activity?.recentEvents.map(\.title) == ["Inspecting the task.", "Checking the result."])
+    }
+
+    @Test
+    func incompleteAndNonTextItemsDoNotReplaceNarration() {
+        var reducer = RolloutEventReducer()
+        reducer.consume(line: event("event_msg", ["type": "task_started"]))
+        reducer.consume(line: completedAgentMessage("The visible update."))
+        for item in [
+            ["type": "AgentMessage", "phase": "commentary", "content": [["type": "Text", "text": NSNull()]]],
+            ["type": "AgentMessage", "phase": "commentary", "content": [["type": "Image", "text": "Not narration"]]],
+            ["type": "Reasoning", "phase": "commentary", "content": [["type": "Text", "text": "Not narration"]]]
+        ] as [[String: Any]] {
+            reducer.consume(line: event("event_msg", ["type": "item_completed", "item": item]))
+        }
+        reducer.consume(line: event("event_msg", [
+            "type": "item_started",
+            "item": ["type": "AgentMessage", "phase": "commentary", "content": [["type": "Text", "text": "Incomplete update"]]]
+        ]))
+
+        #expect(reducer.status == .working)
+        #expect(reducer.activity?.headline == "The visible update.")
+        #expect(reducer.activity?.recentEvents.isEmpty == true)
+    }
+
+    @Test
     func recentUpdatesKeepTheirOwnTimestamps() {
         var reducer = RolloutEventReducer()
         let firstTimestamp = "2026-07-22T10:00:00.000Z"
@@ -352,18 +445,27 @@ struct RolloutEventReducerTests {
         #expect(reducer.activity?.headline.contains("private command") == false)
     }
 
-    @Test
-    func activityTextIsBoundedDuringRecovery() {
+    @Test(arguments: [false, true])
+    func activityTextIsBoundedDuringRecovery(modernFormat: Bool) {
         var reducer = RolloutEventReducer()
         reducer.consume(line: event("event_msg", ["type": "task_started"]))
-        reducer.consume(line: event("event_msg", [
+        let message = String(repeating: "x", count: 70_000)
+        reducer.consume(line: modernFormat ? completedAgentMessage(message) : event("event_msg", [
             "type": "agent_message",
             "phase": "commentary",
-            "message": String(repeating: "x", count: 70_000)
+            "message": message
         ]))
 
         #expect(reducer.activity?.headline.count == 280)
         #expect(reducer.activity?.headline.hasSuffix("…") == true)
+
+        reducer.consume(line: event("event_msg", ["type": "task_failed", "message": "The attempt failed."]))
+        reducer.consume(line: event("event_msg", ["type": "task_started"]))
+        #expect(reducer.activity?.headline == "Codex is working on this task.")
+        #expect(reducer.activity?.recentEvents.isEmpty == true)
+        reducer.consume(line: completedAgentMessage("The new attempt is running."))
+        #expect(reducer.status == .working)
+        #expect(reducer.activity?.headline == "The new attempt is running.")
     }
 
     @Test
@@ -414,6 +516,22 @@ struct RolloutEventReducerTests {
         reducer.consume(line: event("response_item", ["type": "message", "text": "Script failed"] ))
         #expect(reducer.status == .inactive)
         #expect(!reducer.isExcluded)
+    }
+
+    private func completedAgentMessage(
+        _ message: String,
+        phase: String = "commentary",
+        timestamp: String? = nil
+    ) -> String {
+        event("event_msg", [
+            "type": "item_completed",
+            "item": [
+                "type": "AgentMessage",
+                "id": "message-1",
+                "phase": phase,
+                "content": [["type": "Text", "text": message]]
+            ]
+        ], timestamp: timestamp)
     }
 
     private func event(_ type: String, _ payload: [String: Any], timestamp: String? = nil) -> String {

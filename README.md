@@ -49,7 +49,11 @@ Working, waiting, finished, and failed tasks are visible together. Expand any ta
 
 ### Keep the most important work in focus
 
-Pin important tasks to your Console, mark work in progress with a blue flag, use yellow, orange, or red flags for issues, and mark production-ready work with a green flag. Your highest-value task stays easy to find even while many other tasks continue in parallel.
+Keep important tasks in **Pinned**, then choose a smaller selection in **Focus → Choose tasks**. Edit Focus whenever your priorities change. A blue **Focus** badge identifies selected tasks in Pinned and All Tasks. Your selection is saved and stays in place as tasks run, finish, or need input; browsing filters and flags do not change it. Task Deck remembers the last selected view when you reopen it. Hover over a task title in the picker to read its full name.
+
+By default, new and resumed pinned tasks are appended to Focus as they appear while Task Deck is running. Turn off **Settings → Organization → Automatically add started tasks to Focus** to keep selection manual. Opening Task Deck or enabling the setting does not add the existing backlog. A quiet attention link shows other pinned tasks waiting for input or permission, or reporting an error. Reminders still appear normally. Unpinning or archiving a task removes it from Focus; Undo restores the affected selection.
+
+Use blue flags for work in progress, yellow, orange, or red flags for issues, and green flags for production-ready work.
 
 ### Preserve the context you do not want to lose
 
@@ -57,15 +61,17 @@ Add a private note when you discover a constraint, finish part of the work, or n
 
 ### Bring work back at the right time
 
-Set a reminder after a delay or for an exact date and time. Snooze when necessary, recover reminders missed while the app or Mac was off, and bring the associated task back into your Console when it needs attention.
+Set a reminder after a delay or for an exact date and time. Snooze when necessary, recover reminders missed while the app or Mac was off, and bring the associated task back into Pinned when it needs attention.
 
 ### Manage many tasks without endless scrolling
 
-Group tasks by project, search instantly, filter by task type or status, and collapse or expand activity in bulk. The Console keeps your chosen tasks close while All Tasks provides the complete picture.
+Group tasks by project, search instantly, filter by task type or status, and collapse or expand activity in bulk. Pinned keeps your chosen tasks close while All Tasks provides the complete picture.
 
 ### Move from overview to action
 
 Open any task directly in Codex, start a new task inside the right project, rename tasks for clarity, optionally sync those titles back to Codex, or archive completed work with undo. Task Deck removes the navigation overhead between noticing something and acting on it.
+
+For standalone chats, use Codex’s **New standalone chat** command (`⌘⌥O`).
 
 ## More useful controls
 
@@ -90,7 +96,7 @@ Codex state is read locally from:
 - `~/.codex/.codex-global-state.json`
 - Session JSONL files under `~/.codex/sessions/`
 
-Archiving and undo use Codex's bundled local app-server protocol so Codex moves session files and updates its state consistently. When Codex's local app-server control socket is reachable, Task Deck connects to that shared server; when no compatible local app server is available, it falls back to Codex's bundled command-line tool. If another Codex client currently owns the task or one of its spawned subtasks, Task Deck removes its Console pin, keeps a durable archive request, and retries automatically until Codex releases its writer lock. An opaque command-line archive failure is queued only when Task Deck can independently confirm a held Codex writer lock; other failures remain visible. The queued task remains available under All Tasks with a blue clock that can be clicked to cancel the request. Pins, title overrides, flags, notes, reminders, project order, and other Task Deck preferences are stored locally in macOS `UserDefaults`.
+Archiving and undo use Codex's bundled local app-server protocol so Codex moves session files and updates its state consistently. When Codex's local app-server control socket is reachable, Task Deck connects to that shared server; when no compatible local app server is available, it falls back to Codex's bundled command-line tool. If another Codex client currently owns the task or one of its spawned subtasks, Task Deck removes its pin, keeps a durable archive request, and retries automatically until Codex releases its writer lock. An opaque command-line archive failure is queued only when Task Deck can independently confirm a held Codex writer lock; other failures remain visible. The queued task remains available under All Tasks with a blue clock that can be clicked to cancel the request. Pins, Focus selection, title overrides, flags, notes, reminders, project order, and other Task Deck preferences are stored locally in macOS `UserDefaults`.
 
 ## Compatibility and unofficial status
 

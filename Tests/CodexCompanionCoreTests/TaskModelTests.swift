@@ -354,6 +354,14 @@ struct TaskModelTests {
     }
 
     @Test
+    func titleCleaningPreservesLongTitlesForEditing() {
+        let title = String(repeating: "Preserve the complete task title. ", count: 8)
+            + "Keep this final sentence."
+
+        #expect(TaskText.cleanTitle(title, fallbackID: "12345678-rest") == title)
+    }
+
+    @Test
     func workingTimerUsesCompactMinuteAndHourFormats() {
         let startedAt = Date(timeIntervalSince1970: 1_000)
 

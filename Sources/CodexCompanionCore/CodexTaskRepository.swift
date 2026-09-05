@@ -2,7 +2,10 @@ import Darwin
 import Foundation
 
 public protocol CodexTaskLoading: Sendable {
-    func loadSnapshot(including kinds: Set<CodexTaskKind>) async throws -> CodexTaskSnapshot
+    func loadSnapshot(
+        including kinds: Set<CodexTaskKind>,
+        alwaysIncluding taskIDs: Set<String>
+    ) async throws -> CodexTaskSnapshot
 }
 
 public enum CodexTaskArchiveResult: Equatable, Sendable {
@@ -18,6 +21,13 @@ public protocol CodexTaskArchiving: Sendable {
 
 public protocol CodexTaskArchiveStateReading: Sendable {
     func isTaskUnarchived(_ taskID: String) async throws -> Bool
+    /// Existing subtree members keyed by ID; true means archived. Missing rows are omitted.
+    func archiveStatesInSubtree(taskID: String) async throws -> [String: Bool]
+}
+
+public protocol CodexTaskArchiveUndoing: Sendable {
+    @discardableResult
+    func undoArchive(taskID: String) async throws -> Set<String>
 }
 
 public extension CodexTaskArchiving {
@@ -36,6 +46,7 @@ public enum CodexRepositoryError: LocalizedError, Equatable {
     case codexExecutableMissing
     case codexCommandFailed(String)
     case codexTaskHasActiveWriter
+    case archiveUndoUnavailable
     case codexTitleUpdateFailed(String)
     case invalidDatabaseResponse
     case invalidProjectCatalog
@@ -49,6 +60,7 @@ public enum CodexRepositoryError: LocalizedError, Equatable {
         case .codexExecutableMissing: "Codex could not be found. Reinstall or update the Codex app."
         case let .codexCommandFailed(message): "Codex could not update the task's archive state: \(message)"
         case .codexTaskHasActiveWriter: "Another Codex client currently owns this task."
+        case .archiveUndoUnavailable: "This archive can no longer be undone in Task Deck. Restore the task in Codex."
         case let .codexTitleUpdateFailed(message): "Codex could not rename the task: \(message)"
         case .invalidDatabaseResponse: "Codex returned an unreadable task list."
         case .invalidProjectCatalog: "Codex returned an unreadable project list."
@@ -79,6 +91,11 @@ public actor CodexTaskRepository:
 
     private struct TaskIDRow: Decodable {
         let id: String
+    }
+
+    private struct TaskArchiveStateRow: Decodable {
+        let id: String
+        let archived: Int
     }
 
     private struct SQLiteFailure: Error {
@@ -271,8 +288,17 @@ public actor CodexTaskRepository:
         self.archiveUpdateTimeout = max(0.1, archiveUpdateTimeout)
     }
 
-    public func loadSnapshot(including kinds: Set<CodexTaskKind>) async throws -> CodexTaskSnapshot {
-        let rows = try queryThreadRows(including: kinds)
+    public func loadSnapshot(
+        including kinds: Set<CodexTaskKind>,
+        alwaysIncluding taskIDs: Set<String> = []
+    ) async throws -> CodexTaskSnapshot {
+        let explicitlyIncludedTaskIDs = try Set(taskIDs.map { taskID in
+            guard let uuid = UUID(uuidString: taskID) else {
+                throw CodexRepositoryError.invalidTaskID(taskID)
+            }
+            return uuid.uuidString.lowercased()
+        })
+        let rows = try queryThreadRows(including: kinds, alwaysIncluding: explicitlyIncludedTaskIDs)
         let projectCatalog = try loadProjectCatalog()
         let sessionTitles = loadSessionTitles()
         var tasks: [CodexTask] = []
@@ -286,16 +312,19 @@ public actor CodexTaskRepository:
             }
 
             let project = resolveProject(for: row, using: projectCatalog)
-            if project == nil, kinds.isDisjoint(with: [.delegated, .unassigned, .agent, .batch]) {
-                continue
-            }
-            if project != nil, kinds.isDisjoint(with: [.regular, .delegated, .automation, .agent, .batch]) {
-                continue
+            let isExplicitlyIncluded = explicitlyIncludedTaskIDs.contains(row.id)
+            if !isExplicitlyIncluded {
+                if project == nil, kinds.isDisjoint(with: [.delegated, .unassigned, .agent, .batch]) {
+                    continue
+                }
+                if project != nil, kinds.isDisjoint(with: [.regular, .delegated, .automation, .agent, .batch]) {
+                    continue
+                }
             }
 
             let reducer = rolloutState(path: row.rolloutPath, expectedTaskID: row.id)
             let kind = taskKind(for: row, reducer: reducer, hasProject: project != nil)
-            guard kinds.contains(kind) else { continue }
+            guard isExplicitlyIncluded || kinds.contains(kind) else { continue }
             let status = reducer?.status ?? .inactive
 
             let resolvedProject = project ?? ProjectIdentity(
@@ -801,6 +830,48 @@ public actor CodexTaskRepository:
             throw CodexRepositoryError.invalidTaskID(taskID)
         }
         return try archiveState(taskID: taskUUID.uuidString.lowercased()) == .unarchived
+    }
+
+    public func archiveStatesInSubtree(taskID: String) async throws -> [String: Bool] {
+        guard let taskUUID = UUID(uuidString: taskID) else {
+            throw CodexRepositoryError.invalidTaskID(taskID)
+        }
+        guard FileManager.default.fileExists(atPath: databaseURL.path) else {
+            throw CodexRepositoryError.databaseMissing(databaseURL.path)
+        }
+        let rootTaskID = taskUUID.uuidString.lowercased()
+        let query = """
+        WITH RECURSIVE archive_tree(id) AS (
+            SELECT '\(rootTaskID)'
+            UNION
+            SELECT edges.child_thread_id
+            FROM thread_spawn_edges AS edges
+            JOIN archive_tree ON edges.parent_thread_id = archive_tree.id
+        )
+        SELECT threads.id, threads.archived
+        FROM threads JOIN archive_tree ON threads.id = archive_tree.id
+        """
+        let output: Data
+        do {
+            do {
+                output = try runDatabaseQuery(query)
+            } catch let failure as SQLiteFailure
+                where failure.message.contains("no such table: thread_spawn_edges")
+            {
+                output = try runDatabaseQuery(
+                    "SELECT id, archived FROM threads WHERE id = '\(rootTaskID)'"
+                )
+            }
+        } catch let failure as SQLiteFailure {
+            throw CodexRepositoryError.sqliteFailed(failure.message)
+        }
+        guard !output.isEmpty else { return [:] }
+        guard let rows = try? JSONDecoder().decode([TaskArchiveStateRow].self, from: output),
+              rows.allSatisfy({ UUID(uuidString: $0.id) != nil })
+        else {
+            throw CodexRepositoryError.invalidDatabaseResponse
+        }
+        return Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.archived != 0) })
     }
 
     private func archiveState(taskID: String) throws -> ArchiveState {
@@ -1312,13 +1383,14 @@ public actor CodexTaskRepository:
 
     private func queryThreadRows(
         including kinds: Set<CodexTaskKind>,
+        alwaysIncluding taskIDs: Set<String>,
         allowsSchemaRetry: Bool = true
     ) throws -> [ThreadRow] {
         guard FileManager.default.fileExists(atPath: databaseURL.path) else {
             throw CodexRepositoryError.databaseMissing(databaseURL.path)
         }
 
-        guard !kinds.isEmpty else { return [] }
+        guard !kinds.isEmpty || !taskIDs.isEmpty else { return [] }
 
         let delegatedPredicate = """
         (COALESCE(source, '') IN ('vscode', 'cli', 'appServer')
@@ -1336,19 +1408,23 @@ public actor CodexTaskRepository:
           OR COALESCE(agent_path, '') <> ''
           OR EXISTS (SELECT 1 FROM thread_spawn_edges WHERE child_thread_id = threads.id))
         """
-        var kindPredicates = [
+        var selectionPredicates = kinds.isEmpty ? [] : [
             "(source IN ('vscode', 'cli', 'appServer') AND NOT \(agentPredicate))"
         ]
         if kinds.contains(.delegated) {
-            kindPredicates.append(delegatedPredicate)
+            selectionPredicates.append(delegatedPredicate)
         }
         if kinds.contains(.agent) {
-            kindPredicates.append(agentPredicate)
+            selectionPredicates.append(agentPredicate)
         }
         if kinds.contains(.batch) {
-            kindPredicates.append("COALESCE(source, '') = 'exec'")
+            selectionPredicates.append("COALESCE(source, '') = 'exec'")
         }
-        let kindPredicate = kindPredicates.map { "(\($0))" }.joined(separator: " OR ")
+        if !taskIDs.isEmpty {
+            let quotedIDs = taskIDs.sorted().map { "'\($0)'" }.joined(separator: ",")
+            selectionPredicates.append("id IN (\(quotedIDs))")
+        }
+        let selectionPredicate = selectionPredicates.map { "(\($0))" }.joined(separator: " OR ")
         let schema = try loadThreadSchema()
         let modelSelection = schema.columns.contains("model") ? "model" : "NULL AS model"
         let effortSelection = schema.columns.contains("reasoning_effort")
@@ -1381,7 +1457,7 @@ public actor CodexTaskRepository:
             COALESCE(recency_at_ms, updated_at * 1000, 0) AS recency_at_ms
         FROM threads
         WHERE archived = 0
-          AND (\(kindPredicate))
+          AND (\(selectionPredicate))
         ORDER BY recency_at_ms DESC
         """
 
@@ -1391,7 +1467,11 @@ public actor CodexTaskRepository:
         } catch let failure as SQLiteFailure {
             if allowsSchemaRetry, failure.message.localizedCaseInsensitiveContains("no such column") {
                 threadSchema = nil
-                return try queryThreadRows(including: kinds, allowsSchemaRetry: false)
+                return try queryThreadRows(
+                    including: kinds,
+                    alwaysIncluding: taskIDs,
+                    allowsSchemaRetry: false
+                )
             }
             throw CodexRepositoryError.sqliteFailed(failure.message)
         }
@@ -1400,7 +1480,11 @@ public actor CodexTaskRepository:
         let schemaVersionChanged = output.schemaVersion != schema.version
         if allowsSchemaRetry, databaseWasReplaced || schemaVersionChanged {
             threadSchema = nil
-            return try queryThreadRows(including: kinds, allowsSchemaRetry: false)
+            return try queryThreadRows(
+                including: kinds,
+                alwaysIncluding: taskIDs,
+                allowsSchemaRetry: false
+            )
         }
 
         guard !output.rows.isEmpty else { return [] }

@@ -12,6 +12,7 @@ struct CodexArchiveCoordinatorTests {
         defer { fixture.remove() }
         let coordinator = CodexArchiveCoordinator(
             primaryArchiver: primary,
+            archiveStateReader: primary,
             defaultsSuiteName: fixture.suiteName
         )
 
@@ -29,6 +30,7 @@ struct CodexArchiveCoordinatorTests {
         defer { fixture.remove() }
         let coordinator = CodexArchiveCoordinator(
             primaryArchiver: primary,
+            archiveStateReader: primary,
             defaultsSuiteName: fixture.suiteName
         )
 
@@ -46,6 +48,7 @@ struct CodexArchiveCoordinatorTests {
         defer { fixture.remove() }
         let coordinator = CodexArchiveCoordinator(
             primaryArchiver: primary,
+            archiveStateReader: primary,
             defaultsSuiteName: fixture.suiteName,
             retryInterval: 0
         )
@@ -154,6 +157,7 @@ struct CodexArchiveCoordinatorTests {
         defer { fixture.remove() }
         let coordinator = CodexArchiveCoordinator(
             primaryArchiver: primary,
+            archiveStateReader: primary,
             defaultsSuiteName: fixture.suiteName
         )
 
@@ -171,6 +175,7 @@ struct CodexArchiveCoordinatorTests {
         defer { fixture.remove() }
         let coordinator = CodexArchiveCoordinator(
             primaryArchiver: primary,
+            archiveStateReader: primary,
             defaultsSuiteName: fixture.suiteName
         )
 
@@ -228,6 +233,7 @@ struct CodexArchiveCoordinatorTests {
         let firstPrimary = RecordingTaskArchiver(outcomes: [.ownerConflict])
         let firstCoordinator = CodexArchiveCoordinator(
             primaryArchiver: firstPrimary,
+            archiveStateReader: firstPrimary,
             defaultsSuiteName: fixture.suiteName
         )
         #expect(try await firstCoordinator.setArchived(true, taskID: "task") == .deferred)
@@ -235,6 +241,7 @@ struct CodexArchiveCoordinatorTests {
         let secondPrimary = RecordingTaskArchiver()
         let secondCoordinator = CodexArchiveCoordinator(
             primaryArchiver: secondPrimary,
+            archiveStateReader: secondPrimary,
             defaultsSuiteName: fixture.suiteName,
             retryInterval: 0
         )
@@ -253,6 +260,7 @@ struct CodexArchiveCoordinatorTests {
         defer { fixture.remove() }
         let coordinator = CodexArchiveCoordinator(
             primaryArchiver: primary,
+            archiveStateReader: primary,
             defaultsSuiteName: fixture.suiteName,
             retryInterval: 0
         )
@@ -280,6 +288,7 @@ struct CodexArchiveCoordinatorTests {
         defer { fixture.remove() }
         let coordinator = CodexArchiveCoordinator(
             primaryArchiver: primary,
+            archiveStateReader: primary,
             defaultsSuiteName: fixture.suiteName,
             retryInterval: 0
         )
@@ -304,9 +313,275 @@ struct CodexArchiveCoordinatorTests {
             .init(archived: true, taskID: "b")
         ])
     }
+
+    @Test
+    func undoRestoresTheArchivedSubtreeButPreservesPreviouslyArchivedChildren() async throws {
+        let primary = SubtreeTaskArchiver()
+        let fixture = try DefaultsFixture()
+        defer { fixture.remove() }
+        let coordinator = CodexArchiveCoordinator(
+            primaryArchiver: primary,
+            archiveStateReader: primary,
+            defaultsSuiteName: fixture.suiteName
+        )
+
+        #expect(try await coordinator.setArchived(true, taskID: "root") == .completed)
+        #expect(await primary.states == ["root": true, "child": true, "older": true])
+        let restoredIDs = try await coordinator.undoArchive(taskID: "root")
+
+        #expect(await primary.states == ["root": false, "child": false, "older": true])
+        #expect(await primary.restoredTaskIDs == ["child", "root"])
+        #expect(restoredIDs == ["root", "child"])
+    }
+
+    @Test
+    func ordinaryUnarchiveStillRestoresOnlyItsTarget() async throws {
+        let primary = SubtreeTaskArchiver()
+        let fixture = try DefaultsFixture()
+        defer { fixture.remove() }
+        let coordinator = CodexArchiveCoordinator(
+            primaryArchiver: primary,
+            archiveStateReader: primary,
+            defaultsSuiteName: fixture.suiteName
+        )
+
+        _ = try await coordinator.setArchived(true, taskID: "root")
+        _ = try await coordinator.setArchived(false, taskID: "root")
+
+        #expect(await primary.states == ["root": false, "child": true, "older": true])
+        #expect(await primary.restoredTaskIDs == ["root"])
+
+        _ = try await coordinator.setArchived(true, taskID: "root")
+        try await coordinator.undoArchive(taskID: "root")
+        #expect(await primary.states == ["root": false, "child": true, "older": true])
+    }
+
+    @Test
+    func undoCancelsAQueuedArchiveAndRestoresOnlyItsPartialChanges() async throws {
+        let primary = SubtreeTaskArchiver(partialOwnerConflict: true)
+        let fixture = try DefaultsFixture()
+        defer { fixture.remove() }
+        let coordinator = CodexArchiveCoordinator(
+            primaryArchiver: primary,
+            archiveStateReader: primary,
+            defaultsSuiteName: fixture.suiteName,
+            retryInterval: 0
+        )
+
+        #expect(try await coordinator.setArchived(true, taskID: "root") == .deferred)
+        let restoredIDs = try await coordinator.undoArchive(taskID: "root")
+        try await coordinator.retryPendingArchives()
+
+        #expect(await primary.states == ["root": false, "child": false, "older": true])
+        #expect(await primary.restoredTaskIDs == ["child"])
+        #expect(await primary.archiveAttempts == 1)
+        #expect(await coordinator.pendingArchiveTaskIDs().isEmpty)
+        #expect(restoredIDs == ["root", "child"])
+    }
+
+    @Test
+    func undoAfterQueuedCompletionRestoresChangesFromBothAttempts() async throws {
+        let primary = SubtreeTaskArchiver(partialOwnerConflict: true)
+        let fixture = try DefaultsFixture()
+        defer { fixture.remove() }
+        let coordinator = CodexArchiveCoordinator(
+            primaryArchiver: primary,
+            archiveStateReader: primary,
+            defaultsSuiteName: fixture.suiteName,
+            retryInterval: 0
+        )
+
+        _ = try await coordinator.setArchived(true, taskID: "root")
+        try await coordinator.retryPendingArchives()
+        let restoredIDs = try await coordinator.undoArchive(taskID: "root")
+
+        #expect(await primary.states == ["root": false, "child": false, "older": true])
+        #expect(await primary.archiveAttempts == 2)
+        #expect(await primary.restoredTaskIDs == ["child", "root"])
+        #expect(await coordinator.pendingArchiveTaskIDs().isEmpty)
+        #expect(restoredIDs == ["root", "child"])
+    }
+
+    @Test
+    func partialUndoFailureKeepsOnlyFailedRestoresForTheNextAttempt() async throws {
+        let primary = SubtreeTaskArchiver(failFirstChildRestore: true)
+        let fixture = try DefaultsFixture()
+        defer { fixture.remove() }
+        let coordinator = CodexArchiveCoordinator(
+            primaryArchiver: primary,
+            archiveStateReader: primary,
+            defaultsSuiteName: fixture.suiteName
+        )
+
+        _ = try await coordinator.setArchived(true, taskID: "root")
+        await #expect(throws: CodexRepositoryError.codexCommandFailed("Restore failed")) {
+            try await coordinator.undoArchive(taskID: "root")
+        }
+        #expect(await primary.states == ["root": false, "child": true, "older": true])
+        let restoredIDs = try await coordinator.undoArchive(taskID: "root")
+
+        #expect(await primary.states == ["root": false, "child": false, "older": true])
+        #expect(await primary.restoredTaskIDs == ["child", "root", "child"])
+        #expect(restoredIDs == ["root", "child"])
+    }
+
+    @Test
+    func retriedQueuedUndoReturnsTheCancelledRootAndRestoredDescendant() async throws {
+        let primary = SubtreeTaskArchiver(partialOwnerConflict: true, failFirstChildRestore: true)
+        let fixture = try DefaultsFixture()
+        defer { fixture.remove() }
+        let coordinator = CodexArchiveCoordinator(
+            primaryArchiver: primary,
+            archiveStateReader: primary,
+            defaultsSuiteName: fixture.suiteName
+        )
+
+        #expect(try await coordinator.setArchived(true, taskID: "root") == .deferred)
+        await #expect(throws: CodexRepositoryError.codexCommandFailed("Restore failed")) {
+            try await coordinator.undoArchive(taskID: "root")
+        }
+        #expect(await coordinator.pendingArchiveTaskIDs().isEmpty)
+
+        let restoredIDs = try await coordinator.undoArchive(taskID: "root")
+        #expect(restoredIDs == ["root", "child"])
+        #expect(await primary.restoredTaskIDs == ["child", "child"])
+    }
+
+    @Test
+    func undoDoesNotReportDeletedSubtreeMembersAsRestored() async throws {
+        let primary = SubtreeTaskArchiver()
+        let fixture = try DefaultsFixture()
+        defer { fixture.remove() }
+        let coordinator = CodexArchiveCoordinator(
+            primaryArchiver: primary,
+            archiveStateReader: primary,
+            defaultsSuiteName: fixture.suiteName
+        )
+
+        _ = try await coordinator.setArchived(true, taskID: "root")
+        await primary.removeTask("child")
+
+        let restoredIDs = try await coordinator.undoArchive(taskID: "root")
+        #expect(restoredIDs == ["root"])
+        #expect(await primary.restoredTaskIDs == ["root"])
+    }
+
+    @Test
+    func undoReturnsTheRootWhenCancellingAPersistedQueueWithoutASessionReceipt() async throws {
+        let primary = RecordingTaskArchiver(outcomes: [.ownerConflict])
+        let fixture = try DefaultsFixture()
+        defer { fixture.remove() }
+        let firstCoordinator = CodexArchiveCoordinator(
+            primaryArchiver: primary,
+            archiveStateReader: primary,
+            defaultsSuiteName: fixture.suiteName
+        )
+        _ = try await firstCoordinator.setArchived(true, taskID: "root")
+        let relaunchedCoordinator = CodexArchiveCoordinator(
+            primaryArchiver: primary,
+            archiveStateReader: primary,
+            defaultsSuiteName: fixture.suiteName
+        )
+
+        #expect(try await relaunchedCoordinator.undoArchive(taskID: "root") == ["root"])
+        #expect(await relaunchedCoordinator.pendingArchiveTaskIDs().isEmpty)
+        #expect(await primary.updates == [.init(archived: true, taskID: "root")])
+    }
+
+    @Test
+    func undoReconcilesWhenThePostArchiveSnapshotWasUnavailable() async throws {
+        let primary = SubtreeTaskArchiver(failingSnapshotReads: [2])
+        let fixture = try DefaultsFixture()
+        defer { fixture.remove() }
+        let coordinator = CodexArchiveCoordinator(
+            primaryArchiver: primary,
+            archiveStateReader: primary,
+            defaultsSuiteName: fixture.suiteName
+        )
+
+        _ = try await coordinator.setArchived(true, taskID: "root")
+        try await coordinator.undoArchive(taskID: "root")
+
+        #expect(await primary.states == ["root": false, "child": false, "older": true])
+        #expect(await primary.archiveAttempts == 1)
+    }
+
+    @Test
+    func unavailableBeforeSnapshotPreventsAnUntrackedArchive() async throws {
+        let primary = SubtreeTaskArchiver(failingSnapshotReads: [1])
+        let fixture = try DefaultsFixture()
+        defer { fixture.remove() }
+        let coordinator = CodexArchiveCoordinator(
+            primaryArchiver: primary,
+            archiveStateReader: primary,
+            defaultsSuiteName: fixture.suiteName
+        )
+
+        await #expect(throws: CodexRepositoryError.invalidDatabaseResponse) {
+            try await coordinator.setArchived(true, taskID: "root")
+        }
+        #expect(await primary.archiveAttempts == 0)
+        #expect(await primary.states == ["root": false, "child": false, "older": true])
+    }
 }
 
-private actor RecordingTaskArchiver: CodexTaskArchiving {
+private actor SubtreeTaskArchiver: CodexTaskArchiving, CodexTaskArchiveStateReading {
+    private(set) var states = ["root": false, "child": false, "older": true]
+    private(set) var restoredTaskIDs: [String] = []
+    private(set) var archiveAttempts = 0
+    private var partialOwnerConflict: Bool
+    private var failFirstChildRestore: Bool
+    private var failingSnapshotReads: Set<Int>
+    private var snapshotReads = 0
+
+    init(
+        partialOwnerConflict: Bool = false,
+        failFirstChildRestore: Bool = false,
+        failingSnapshotReads: Set<Int> = []
+    ) {
+        self.partialOwnerConflict = partialOwnerConflict
+        self.failFirstChildRestore = failFirstChildRestore
+        self.failingSnapshotReads = failingSnapshotReads
+    }
+
+    func setArchived(_ archived: Bool, taskID: String) throws -> CodexTaskArchiveResult {
+        if archived {
+            archiveAttempts += 1
+            states["child"] = true
+            if partialOwnerConflict {
+                partialOwnerConflict = false
+                throw CodexRepositoryError.codexTaskHasActiveWriter
+            }
+            states["root"] = true
+        } else {
+            restoredTaskIDs.append(taskID)
+            if taskID == "child", failFirstChildRestore {
+                failFirstChildRestore = false
+                throw CodexRepositoryError.codexCommandFailed("Restore failed")
+            }
+            states[taskID] = false
+        }
+        return .completed
+    }
+
+    func isTaskUnarchived(_ taskID: String) -> Bool {
+        states[taskID] == false
+    }
+
+    func removeTask(_ taskID: String) {
+        states.removeValue(forKey: taskID)
+    }
+
+    func archiveStatesInSubtree(taskID: String) throws -> [String: Bool] {
+        snapshotReads += 1
+        if failingSnapshotReads.contains(snapshotReads) {
+            throw CodexRepositoryError.invalidDatabaseResponse
+        }
+        return states
+    }
+}
+
+private actor RecordingTaskArchiver: CodexTaskArchiving, CodexTaskArchiveStateReading {
     struct Update: Equatable {
         let archived: Bool
         let taskID: String
@@ -320,6 +595,7 @@ private actor RecordingTaskArchiver: CodexTaskArchiving {
 
     private(set) var updates: [Update] = []
     private var outcomes: [Outcome]
+    private var archivedTaskIDs: Set<String> = []
 
     init(outcomes: [Outcome] = []) {
         self.outcomes = outcomes
@@ -337,7 +613,20 @@ private actor RecordingTaskArchiver: CodexTaskArchiving {
         if outcome == .failure {
             throw CodexRepositoryError.codexCommandFailed("Retry failed")
         }
+        if archived {
+            archivedTaskIDs.insert(taskID)
+        } else {
+            archivedTaskIDs.remove(taskID)
+        }
         return .completed
+    }
+
+    func isTaskUnarchived(_ taskID: String) -> Bool {
+        !archivedTaskIDs.contains(taskID)
+    }
+
+    func archiveStatesInSubtree(taskID: String) -> [String: Bool] {
+        [taskID: archivedTaskIDs.contains(taskID)]
     }
 }
 
@@ -346,6 +635,10 @@ private struct StaticArchiveStateReader: CodexTaskArchiveStateReading {
 
     func isTaskUnarchived(_ taskID: String) -> Bool {
         isUnarchived
+    }
+
+    func archiveStatesInSubtree(taskID: String) -> [String: Bool] {
+        [taskID: !isUnarchived]
     }
 }
 
